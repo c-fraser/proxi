@@ -1,0 +1,27 @@
+[versions]
+kotlin = "1.7.10"
+javalin = "5.0.0.RC0"
+okhttp = "4.10.0"
+slf4j = "2.0.0"
+kotest = "5.4.1"
+knit = "0.4.0"
+ktfmt = "0.39"
+
+[libraries]
+javalin = { module = "io.javalin:javalin", version.ref = "javalin" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+kotest-assertions-core = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
+kotest-runner-junit5 = { module = "io.kotest:kotest-runner-junit5", version.ref = "kotest" }
+knit = { module = "org.jetbrains.kotlinx:kotlinx-knit", version.ref = "knit" }
+knit-test = { module = "org.jetbrains.kotlinx:kotlinx-knit-test", version.ref = "knit" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+dokka = { id = "org.jetbrains.dokka", version.ref = "kotlin" }
+spotless = { id = "com.diffplug.spotless", version = "6.9.0" }
+detekt = { id = "io.gitlab.arturbosch.detekt", version = "1.21.0" }
+nexus-publish = { id = "io.github.gradle-nexus.publish-plugin", version = "1.1.0" }
+jreleaser = { id = "org.jreleaser", version = "1.1.0" }
+dependency-versions = { id = "com.github.ben-manes.versions", version = "0.42.0" }
+kover = { id = "org.jetbrains.kotlinx.kover", version = "0.5.1" }
