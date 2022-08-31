@@ -15,6 +15,7 @@ limitations under the License.
 */
 package io.github.cfraser.proxylin.impl
 
+import io.github.cfraser.proxylin.Interceptor
 import io.github.cfraser.proxylin.Proxier
 import io.github.cfraser.proxylin.Request
 import io.github.cfraser.proxylin.Response
@@ -33,17 +34,25 @@ import okhttp3.ResponseBody
  */
 object OkHttpClientProxier {
 
-  class Sync @JvmOverloads constructor(private val client: OkHttpClient = OkHttpClient()) :
-      Proxier.Sync {
+  class Sync
+  @JvmOverloads
+  constructor(
+      private val client: OkHttpClient = OkHttpClient(),
+      override val interceptor: Interceptor.Sync = NoOpInterceptor.Sync
+  ) : Proxier.Sync {
 
-    override fun proxy(request: Request) =
+    override fun execute(request: Request) =
         client.newCall(request.toRequest()).execute().toResponse()
   }
 
-  class Async @JvmOverloads constructor(private val client: OkHttpClient = OkHttpClient()) :
-      Proxier.Async {
+  class Async
+  @JvmOverloads
+  constructor(
+      private val client: OkHttpClient = OkHttpClient(),
+      override val interceptor: Interceptor.Async = NoOpInterceptor.Async
+  ) : Proxier.Async {
 
-    override fun proxy(request: Request) =
+    override fun execute(request: Request) =
         client.newCall(request.toRequest()).run {
           CompletableFuture<Response>().apply {
             enqueue(

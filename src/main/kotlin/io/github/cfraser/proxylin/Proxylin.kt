@@ -15,7 +15,6 @@ limitations under the License.
 */
 package io.github.cfraser.proxylin
 
-import io.github.cfraser.proxylin.impl.NoOpInterceptor
 import io.github.cfraser.proxylin.impl.OkHttpClientProxier
 import io.javalin.Javalin
 import io.javalin.http.Context
@@ -28,38 +27,19 @@ import io.javalin.routing.PathMatcher
 /**
  * [Proxylin] is a [Plugin] which enables a [Javalin] server to proxy requests.
  *
- * The [proxier] and [interceptor] must both be synchronous or asynchronous. An
- * [IllegalArgumentException] is thrown if the [proxier] and the [interceptor] are synchronous and
- * asynchronous, irrespectively.
- *
- * @property proxier the [Proxier] used to make proxy requests
- * @property interceptor the [Interceptor] used to intercept proxy requests and responses
+ * @property proxier the [Proxier] used to proxy requests
  */
 class Proxylin
 @JvmOverloads
-constructor(
-    private val proxier: Proxier = OkHttpClientProxier.Sync(),
-    private val interceptor: Interceptor = NoOpInterceptor.Sync
-) : Plugin {
-
-  init {
-    require(
-        (proxier is Proxier.Sync && interceptor is Interceptor.Sync) ||
-            (proxier is Proxier.Async && interceptor is Interceptor.Async)) {
-      "The proxier and interceptor must both be synchronous or asynchronous"
-    }
-  }
+constructor(private val proxier: Proxier = OkHttpClientProxier.Sync()) : Plugin {
 
   /** Apply the proxying capabilities to the [app]. */
   override fun apply(app: Javalin) {
     val matcher = app.javalinServlet().matcher
     val handler =
-        when {
-          proxier is Proxier.Sync && interceptor is Interceptor.Sync ->
-              ProxyHandler.Sync(proxier, interceptor, matcher)
-          proxier is Proxier.Async && interceptor is Interceptor.Async ->
-              ProxyHandler.Async(proxier, interceptor, matcher)
-          else -> error("Unable to initialize proxy handler")
+        when (proxier) {
+          is Proxier.Sync -> ProxyHandler.Sync(proxier, matcher)
+          is Proxier.Async -> ProxyHandler.Async(proxier, matcher)
         }
     app.after(handler)
   }
@@ -68,11 +48,11 @@ constructor(
   private sealed class ProxyHandler(private val matcher: PathMatcher) : Handler {
 
     override fun handle(ctx: Context) {
-      if (ctx.isProxyRequest) proxy(ctx)
+      ctx.takeIf { it.isProxyRequest }?.proxy()
     }
 
-    /** Proxy the request. */
-    abstract fun proxy(ctx: Context)
+    /** Use the [Context] to execute the proxy request and respond with the response. */
+    abstract fun Context.proxy()
 
     /**
      * Determine whether the request should be proxied.
@@ -83,33 +63,22 @@ constructor(
       get() = method().isHttpMethod() && matcher.findEntries(method(), requestPath).isEmpty()
 
     /** [ProxyHandler.Sync] is a synchronous [ProxyHandler]. */
-    class Sync(
-        private val proxier: Proxier.Sync,
-        private val interceptor: Interceptor.Sync,
-        matcher: PathMatcher
-    ) : ProxyHandler(matcher) {
+    class Sync(private val proxier: Proxier.Sync, matcher: PathMatcher) : ProxyHandler(matcher) {
 
-      override fun proxy(ctx: Context) {
-        val request = ctx.toRequest().also(interceptor::intercept)
-        val response = proxier.proxy(request).also(interceptor::intercept)
-        ctx.respond(response)
+      override fun Context.proxy() {
+        val request = toRequest()
+        val response = proxier.proxy(request)
+        respond(response)
       }
     }
 
     /** [ProxyHandler.Async] is an asynchronous [ProxyHandler]. */
-    class Async(
-        private val proxier: Proxier.Async,
-        private val interceptor: Interceptor.Async,
-        matcher: PathMatcher
-    ) : ProxyHandler(matcher) {
+    class Async(private val proxier: Proxier.Async, matcher: PathMatcher) : ProxyHandler(matcher) {
 
-      override fun proxy(ctx: Context) {
-        val future =
-            ctx.toRequest()
-                .let { request -> interceptor.intercept(request).thenApply { request } }
-                .thenCompose { request -> proxier.proxy(request) }
-                .thenCompose { response -> interceptor.intercept(response).thenApply { response } }
-        ctx.future(future) { ctx.respond(it) }
+      override fun Context.proxy() {
+        val request = toRequest()
+        val response = proxier.proxy(request)
+        future(response) { respond(it) }
       }
     }
 

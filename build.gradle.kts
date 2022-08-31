@@ -40,9 +40,9 @@ plugins {
   signing
 }
 
-apply {
-  plugin("kotlinx-knit")
+apply(plugin = "kotlinx-knit")
 
+allprojects {
   group = "io.github.c-fraser"
   version = "0.0.0"
 }
@@ -119,38 +119,41 @@ publishing {
         from(dokkaJavadoc.outputDirectory.get())
       }
 
-  publications.withType<MavenPublication> {
-    artifact(javadocJar)
-    pom {
-      name.set(rootProject.name)
-      description.set("${rootProject.name}-${project.version}")
-      url.set("https://github.com/c-fraser/${rootProject.name}")
-      inceptionYear.set("2022")
-
-      issueManagement {
-        system.set("GitHub")
-        url.set("https://github.com/c-fraser/${rootProject.name}/issues")
-      }
-
-      licenses {
-        license {
-          name.set("The Apache Software License, Version 2.0")
-          url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
-          distribution.set("repo")
-        }
-      }
-
-      developers {
-        developer {
-          id.set("c-fraser")
-          name.set("Chris Fraser")
-        }
-      }
-
-      scm {
+  publications {
+    create<MavenPublication>("maven") {
+      from(project.components["java"])
+      artifact(javadocJar)
+      pom {
+        name.set(rootProject.name)
+        description.set("${rootProject.name}-${project.version}")
         url.set("https://github.com/c-fraser/${rootProject.name}")
-        connection.set("scm:git:git://github.com/c-fraser/${rootProject.name}.git")
-        developerConnection.set("scm:git:ssh://git@github.com/c-fraser/${rootProject.name}.git")
+        inceptionYear.set("2022")
+
+        issueManagement {
+          system.set("GitHub")
+          url.set("https://github.com/c-fraser/${rootProject.name}/issues")
+        }
+
+        licenses {
+          license {
+            name.set("The Apache Software License, Version 2.0")
+            url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+            distribution.set("repo")
+          }
+        }
+
+        developers {
+          developer {
+            id.set("c-fraser")
+            name.set("Chris Fraser")
+          }
+        }
+
+        scm {
+          url.set("https://github.com/c-fraser/${rootProject.name}")
+          connection.set("scm:git:git://github.com/c-fraser/${rootProject.name}.git")
+          developerConnection.set("scm:git:ssh://git@github.com/c-fraser/${rootProject.name}.git")
+        }
       }
     }
   }
@@ -207,7 +210,10 @@ configure<JReleaserExtension> {
 }
 
 tasks {
-  withType<KotlinCompile> { kotlinOptions.jvmTarget = "${JavaVersion.VERSION_11}" }
+  withType<KotlinCompile> {
+    kotlinOptions.jvmTarget = "${JavaVersion.VERSION_11}"
+    kotlinOptions.freeCompilerArgs = listOf("-Xjsr305=strict", "-Xjvm-default=all")
+  }
 
   withType<Jar> {
     manifest { attributes("Automatic-Module-Name" to "io.github.cfraser.${rootProject.name}") }

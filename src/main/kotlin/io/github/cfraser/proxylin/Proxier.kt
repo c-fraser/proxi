@@ -17,11 +17,21 @@ package io.github.cfraser.proxylin
 
 import java.util.concurrent.CompletableFuture
 
-/** [Proxier] manages the execution of proxy requests. */
+/**
+ * [Proxier] manages the execution of proxy requests. Proxy requests and responses are intercepted
+ * by the [interceptor].
+ */
 sealed interface Proxier {
 
+  /** The [Interceptor] to use to intercept proxy requests and responses. */
+  val interceptor: Interceptor
+
   /** [Proxier.Sync] is a synchronous [Proxier]. */
-  fun interface Sync : Proxier {
+  @JvmDefaultWithCompatibility
+  interface Sync : Proxier {
+
+    /** The synchronous [interceptor] to use to intercept proxy requests and responses. */
+    override val interceptor: Interceptor.Sync
 
     /**
      * Execute the proxy [request].
@@ -30,11 +40,28 @@ sealed interface Proxier {
      * @return the [Response]
      * @throws Exception if execution of the proxy request fails
      */
-    @Throws(Exception::class) fun proxy(request: Request): Response
+    @Throws(Exception::class) fun execute(request: Request): Response
+
+    /**
+     * Proxy the [request].
+     *
+     * The [request] and [Response] are intercepted by the [interceptor].
+     *
+     * @param request the [Request] to proxy
+     * @return the [Response]
+     * @throws Exception if proxying the request fails
+     */
+    @Throws(Exception::class)
+    fun proxy(request: Request): Response =
+        execute(request.also(interceptor::intercept)).also(interceptor::intercept)
   }
 
   /** [Proxier.Async] is an asynchronous [Proxier]. */
-  fun interface Async : Proxier {
+  @JvmDefaultWithCompatibility
+  interface Async : Proxier {
+
+    /** The asynchronous [interceptor] to use to intercept proxy requests and responses. */
+    override val interceptor: Interceptor.Async
 
     /**
      * Asynchronously execute the proxy [request].
@@ -42,6 +69,21 @@ sealed interface Proxier {
      * @param request the [Request] to execute
      * @return the [CompletableFuture] of [Response]
      */
-    fun proxy(request: Request): CompletableFuture<Response>
+    fun execute(request: Request): CompletableFuture<Response>
+
+    /**
+     * Proxy the [request].
+     *
+     * The [request] and [Response] are intercepted by the [interceptor].
+     *
+     * @param request the [Request] to proxy
+     * @return the [Response]
+     */
+    fun proxy(request: Request): CompletableFuture<Response> =
+        interceptor
+            .intercept(request)
+            .thenApply { request }
+            .thenCompose { execute(it) }
+            .thenCompose { response -> interceptor.intercept(response).thenApply { response } }
   }
 }

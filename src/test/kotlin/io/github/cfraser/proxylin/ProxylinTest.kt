@@ -76,7 +76,7 @@ class ProxylinTest {
 
   @Test
   fun `matched request is not proxied`() {
-    proxyApp(Proxylin()).run(LOCAL_GET).start(0).use {
+    proxy(Proxylin()).run(LOCAL_GET).start(0).use {
       val client = HttpClient(it, OkHttpClient())
       client.verifyGet(LOCAL_PATH, LOCAL_DATA)
     }
@@ -124,7 +124,7 @@ class ProxylinTest {
     fun target(configurer: Javalin.() -> Javalin = TARGET_GET): Javalin =
         Javalin.create { it.showJavalinBanner = false }.run(configurer)
 
-    fun proxyApp(plugin: Plugin, configurer: Javalin.() -> Javalin = { this }): Javalin =
+    fun proxy(plugin: Plugin, configurer: Javalin.() -> Javalin = { this }): Javalin =
         Javalin.create {
               it.plugins.register(plugin)
               it.showJavalinBanner = false
@@ -132,7 +132,7 @@ class ProxylinTest {
             .run(configurer)
 
     fun syncProxy(interceptor: Interceptor.Sync = NoOpInterceptor.Sync): Javalin =
-        proxyApp(Proxylin(OkHttpClientProxier.Sync(), interceptor))
+        proxy(Proxylin(OkHttpClientProxier.Sync(interceptor = interceptor)))
 
     fun syncInterceptor(
         onRequest: (Request) -> Unit = {},
@@ -144,7 +144,7 @@ class ProxylinTest {
         }
 
     fun asyncProxy(interceptor: Interceptor.Async = NoOpInterceptor.Async): Javalin =
-        proxyApp(Proxylin(OkHttpClientProxier.Async(), interceptor))
+        proxy(Proxylin(OkHttpClientProxier.Async(interceptor = interceptor)))
 
     fun asyncInterceptor(
         onRequest: (Request) -> Unit = {},
