@@ -61,9 +61,11 @@ dependencies {
   compileOnly(libs.slf4j.api)
   implementation(libs.okhttp)
 
-  /*testImplementation(kotlin("test"))*/
-  testImplementation(libs.kotest.assertions.core)
-  testImplementation(libs.kotest.runner.junit5)
+  testImplementation(kotlin("test"))
+  testImplementation(libs.junit.jupiter)
+  testImplementation(libs.javalin)
+  testImplementation(libs.javalin.testtools)
+  testImplementation(libs.slf4j.simple)
 }
 
 val kotlinSourceFiles by lazy {

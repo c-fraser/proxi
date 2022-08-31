@@ -3,6 +3,7 @@
 [![Test](https://github.com/c-fraser/proxylin/workflows/Test/badge.svg)](https://github.com/c-fraser/proxylin/actions)
 [![Release](https://img.shields.io/github/v/release/c-fraser/proxylin?logo=github&sort=semver)](https://github.com/c-fraser/proxylin/releases)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.c-fraser/proxylin.svg)](https://search.maven.org/search?q=g:io.github.c-fraser%20AND%20a:proxylin*)
+[![Javadoc](https://javadoc.io/badge2/io.github.c-fraser/proxylin/javadoc.svg)](https://javadoc.io/doc/io.github.c-fraser/proxylin)
 [![Apache License 2.0](https://img.shields.io/badge/License-Apache2-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
 `proxylin` is a [javalin](https://javalin.io/) plugin enabling (forward) proxying capabilities.

@@ -18,48 +18,57 @@ package io.github.cfraser.proxylin.impl
 import io.github.cfraser.proxylin.Proxier
 import io.github.cfraser.proxylin.Request
 import io.github.cfraser.proxylin.Response
+import java.io.IOException
+import java.util.concurrent.CompletableFuture
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Headers.Companion.toHeaders
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody
 
 /**
- * [OkHttpClientProxier] is an [Proxier] implementation that uses [OkHttpClient] to execute proxy
+ * [OkHttpClientProxier] provides [Proxier] implementation that use [OkHttpClient] to execute proxy
  * requests.
- *
- * @property client the [OkHttpClient] to use to make proxy requests
  */
-class OkHttpClientProxier
-@JvmOverloads
-constructor(private val client: OkHttpClient = OkHttpClient()) : Proxier {
+object OkHttpClientProxier {
 
-  override fun proxy(request: Request) =
-      okhttp3.Request.Builder()
-          .url(request.url)
-          .method(request.method, request.body?.toRequestBody())
-          .headers(request.headers.toHeaders())
-          .build()
-          .let { client.newCall(it).execute() }
-          .use { Response(it.code, it.headers.toMap(), it.body?.use(ResponseBody::bytes)) }
+  class Sync @JvmOverloads constructor(private val client: OkHttpClient = OkHttpClient()) :
+      Proxier.Sync {
 
-  /*HttpRequest.newBuilder(URI(request.url))
-          .method(
-              request.method,
-              request.body?.let { BodyPublishers.ofByteArray(it) } ?: BodyPublishers.noBody())
-          .let {
-            request.headers.asSequence().fold(it) { builder, (name, value) ->
-              builder.header(name, value)
-            }
+    override fun proxy(request: Request) =
+        client.newCall(request.toRequest()).execute().toResponse()
+  }
+
+  class Async @JvmOverloads constructor(private val client: OkHttpClient = OkHttpClient()) :
+      Proxier.Async {
+
+    override fun proxy(request: Request) =
+        client.newCall(request.toRequest()).run {
+          CompletableFuture<Response>().apply {
+            enqueue(
+                object : Callback {
+                  override fun onFailure(call: Call, e: IOException) {
+                    completeExceptionally(e)
+                  }
+                  override fun onResponse(call: Call, response: okhttp3.Response) {
+                    complete(response.toResponse())
+                  }
+                })
           }
+        }
+  }
+
+  /** Convert the [Request] to an [okhttp3.Request]. */
+  private fun Request.toRequest(): okhttp3.Request =
+      okhttp3.Request.Builder()
+          .url(url)
+          .method(method, body?.toRequestBody())
+          .headers(headers.toHeaders())
           .build()
-          .let { client.send(it, BodyHandlers.ofByteArray()) }
-          .let { Response(it.statusCode(), it.headers().map().toSingleValueMap(), it.body()) }
 
-  private companion object {
-
-    fun <K, V> Map<K, List<V>>.toSingleValueMap() =
-        asSequence()
-            .mapNotNull { (key, values) -> values.firstOrNull()?.let { value -> key to value } }
-            .toMap()
-  }*/
+  /** Convert the [okhttp3.Response] to a [Response]. */
+  private fun okhttp3.Response.toResponse(): Response = use {
+    Response(it.code, it.headers.toMap(), it.body?.use(ResponseBody::bytes))
+  }
 }

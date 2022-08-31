@@ -15,14 +15,33 @@ limitations under the License.
 */
 package io.github.cfraser.proxylin
 
-/** [Proxier] manages the execution of proxy requests. */
-fun interface Proxier {
+import java.util.concurrent.CompletableFuture
 
-  /**
-   * Execute the proxy [request].
-   *
-   * @param request the [Request] to execute
-   * @return the [Response]
-   */
-  fun proxy(request: Request): Response
+/** [Proxier] manages the execution of proxy requests. */
+sealed interface Proxier {
+
+  /** [Proxier.Sync] is a synchronous [Proxier]. */
+  fun interface Sync : Proxier {
+
+    /**
+     * Execute the proxy [request].
+     *
+     * @param request the [Request] to execute
+     * @return the [Response]
+     * @throws Exception if execution of the proxy request fails
+     */
+    @Throws(Exception::class) fun proxy(request: Request): Response
+  }
+
+  /** [Proxier.Async] is an asynchronous [Proxier]. */
+  fun interface Async : Proxier {
+
+    /**
+     * Asynchronously execute the proxy [request].
+     *
+     * @param request the [Request] to execute
+     * @return the [CompletableFuture] of [Response]
+     */
+    fun proxy(request: Request): CompletableFuture<Response>
+  }
 }

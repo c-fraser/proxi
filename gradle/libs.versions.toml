@@ -3,16 +3,17 @@ kotlin = "1.7.10"
 javalin = "5.0.0.RC0"
 okhttp = "4.10.0"
 slf4j = "2.0.0"
-kotest = "5.4.1"
+junit = "5.9.0"
 knit = "0.4.0"
 ktfmt = "0.39"
 
 [libraries]
 javalin = { module = "io.javalin:javalin", version.ref = "javalin" }
+javalin-testtools = { module = "io.javalin:javalin-testtools", version.ref = "javalin" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
-kotest-assertions-core = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
-kotest-runner-junit5 = { module = "io.kotest:kotest-runner-junit5", version.ref = "kotest" }
+slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 knit = { module = "org.jetbrains.kotlinx:kotlinx-knit", version.ref = "knit" }
 knit-test = { module = "org.jetbrains.kotlinx:kotlinx-knit-test", version.ref = "knit" }
 

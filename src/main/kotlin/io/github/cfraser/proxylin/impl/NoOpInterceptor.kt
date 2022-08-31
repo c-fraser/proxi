@@ -18,13 +18,24 @@ package io.github.cfraser.proxylin.impl
 import io.github.cfraser.proxylin.Interceptor
 import io.github.cfraser.proxylin.Request
 import io.github.cfraser.proxylin.Response
+import java.util.concurrent.CompletableFuture
 
 /**
- * [NoOpInterceptor] is an [Interceptor] implementation that performs no operations on the
+ * [NoOpInterceptor] provides [Interceptor] implementations that perform no operations on the
  * intercepted requests and responses.
  */
-object NoOpInterceptor : Interceptor {
+object NoOpInterceptor {
 
-  override fun intercept(request: Request) = Unit
-  override fun intercept(response: Response) = Unit
+  object Sync : Interceptor.Sync {
+    override fun intercept(request: Request) = Unit
+    override fun intercept(response: Response) = Unit
+  }
+
+  object Async : Interceptor.Async {
+
+    private val RESULT: CompletableFuture<Unit?> = CompletableFuture.completedFuture(Unit)
+
+    override fun intercept(request: Request) = RESULT
+    override fun intercept(response: Response) = RESULT
+  }
 }
