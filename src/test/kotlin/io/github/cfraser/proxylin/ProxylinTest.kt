@@ -76,7 +76,7 @@ class ProxylinTest {
 
   @Test
   fun `matched request is not proxied`() {
-    proxy(Proxylin()).run(LOCAL_GET).start(0).use {
+    proxy(Proxylin.create()).run(LOCAL_GET).start(0).use {
       val client = HttpClient(it, OkHttpClient())
       client.verifyGet(LOCAL_PATH, LOCAL_DATA)
     }

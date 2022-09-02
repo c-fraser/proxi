@@ -23,15 +23,60 @@ import io.javalin.http.Header
 import io.javalin.http.HttpStatus
 import io.javalin.plugin.Plugin
 import io.javalin.routing.PathMatcher
+import java.util.function.Consumer
 
 /**
  * [Proxylin] is a [Plugin] which enables a [Javalin] server to proxy requests.
  *
- * @property proxier the [Proxier] used to proxy requests
+ * @property proxier the [Proxier] used to proxy and intercept requests
  */
-class Proxylin
-@JvmOverloads
-constructor(private val proxier: Proxier = OkHttpClientProxier.Sync()) : Plugin {
+class Proxylin internal constructor(private val proxier: Proxier) : Plugin {
+
+  companion object {
+
+    /**
+     * Create an instance of the [Proxylin] plugin.
+     *
+     * @param proxier the [Proxier] to use to proxy and intercept requests
+     * @return the [Plugin]
+     */
+    @JvmStatic fun create(proxier: Proxier): Plugin = Proxylin(proxier)
+
+    /**
+     * Create an instance of the [Proxylin] plugin.
+     *
+     * @param interceptor the [Interceptor] to use to intercept proxy requests
+     * @return the [Plugin]
+     */
+    @JvmStatic
+    fun create(interceptor: Interceptor): Plugin =
+        create(
+            when (interceptor) {
+              is Interceptor.Sync -> OkHttpClientProxier.Sync(interceptor = interceptor)
+              is Interceptor.Async -> OkHttpClientProxier.Async(interceptor = interceptor)
+            })
+
+    /**
+     * Create an instance of the [Proxylin] plugin.
+     *
+     * @param onRequest the [Interceptor.Sync.intercept] function for proxy requests
+     * @param onResponse the [Interceptor.Sync.intercept] function for proxy responses
+     * @return the [Plugin]
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun create(
+        onRequest: Consumer<Request> = Consumer {},
+        onResponse: Consumer<Response> = Consumer {}
+    ): Plugin =
+        create(
+            OkHttpClientProxier.Sync(
+                interceptor =
+                    object : Interceptor.Sync {
+                      override fun intercept(request: Request) = onRequest.accept(request)
+                      override fun intercept(response: Response) = onResponse.accept(response)
+                    }))
+  }
 
   /** Apply the proxying capabilities to the [app]. */
   override fun apply(app: Javalin) {

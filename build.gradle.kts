@@ -64,8 +64,11 @@ dependencies {
   testImplementation(kotlin("test"))
   testImplementation(libs.junit.jupiter)
   testImplementation(libs.javalin)
+  testImplementation(libs.okhttp)
+  testImplementation(libs.okhttp.mockwebserver)
   testImplementation(libs.javalin.testtools)
-  testImplementation(libs.slf4j.simple)
+  testImplementation(libs.slf4j.nop)
+  testImplementation(libs.knit.test)
 }
 
 val kotlinSourceFiles by lazy {
