@@ -15,8 +15,6 @@ limitations under the License.
 */
 package io.github.cfraser.proxylin
 
-import io.github.cfraser.proxylin.impl.NoOpInterceptor
-import io.github.cfraser.proxylin.impl.OkHttpClientProxier
 import io.javalin.Javalin
 import io.javalin.http.Context
 import io.javalin.http.Header
@@ -39,16 +37,14 @@ class ProxylinTest {
 
   @Test
   fun `intercept proxy request`() {
-    test(
-        target = target(AUTH_TARGET_GET),
-        proxy = syncProxy(syncInterceptor(onRequest = USE_AUTH))) {
+    test(target = target(AUTH_TARGET_GET), proxy = syncProxy(onRequest = USE_AUTH)) {
       it.verifyGet(TARGET_PATH, TARGET_DATA)
     }
   }
 
   @Test
   fun `intercept proxy response`() {
-    test(proxy = syncProxy(syncInterceptor(onResponse = USE_INTERCEPTED_DATA))) {
+    test(proxy = syncProxy(onResponse = USE_INTERCEPTED_DATA)) {
       it.verifyGet(TARGET_PATH, INTERCEPTED_DATA)
     }
   }
@@ -60,16 +56,14 @@ class ProxylinTest {
 
   @Test
   fun `asynchronously intercept proxy request`() {
-    test(
-        target = target(AUTH_TARGET_GET),
-        proxy = asyncProxy(asyncInterceptor(onRequest = USE_AUTH))) {
+    test(target = target(AUTH_TARGET_GET), proxy = asyncProxy(onRequest = USE_AUTH)) {
       it.verifyGet(TARGET_PATH, TARGET_DATA)
     }
   }
 
   @Test
   fun `asynchronously intercept proxy response`() {
-    test(proxy = asyncProxy(asyncInterceptor(onResponse = USE_INTERCEPTED_DATA))) {
+    test(proxy = asyncProxy(onResponse = USE_INTERCEPTED_DATA)) {
       it.verifyGet(TARGET_PATH, INTERCEPTED_DATA)
     }
   }
@@ -131,31 +125,17 @@ class ProxylinTest {
             }
             .run(configurer)
 
-    fun syncProxy(interceptor: Interceptor.Sync = NoOpInterceptor.Sync): Javalin =
-        proxy(Proxylin(OkHttpClientProxier.Sync(interceptor = interceptor)))
+    fun syncProxy(onRequest: (Request) -> Unit = {}, onResponse: (Response) -> Unit = {}): Javalin =
+        proxy(Proxylin.create(onRequest = onRequest, onResponse = onResponse))
 
-    fun syncInterceptor(
+    fun asyncProxy(
         onRequest: (Request) -> Unit = {},
         onResponse: (Response) -> Unit = {}
-    ): Interceptor.Sync =
-        object : Interceptor.Sync {
-          override fun intercept(request: Request) = onRequest(request)
-          override fun intercept(response: Response) = onResponse(response)
-        }
-
-    fun asyncProxy(interceptor: Interceptor.Async = NoOpInterceptor.Async): Javalin =
-        proxy(Proxylin(OkHttpClientProxier.Async(interceptor = interceptor)))
-
-    fun asyncInterceptor(
-        onRequest: (Request) -> Unit = {},
-        onResponse: (Response) -> Unit = {}
-    ): Interceptor.Async =
-        object : Interceptor.Async {
-          override fun intercept(request: Request) =
-              CompletableFuture.supplyAsync { onRequest(request) }
-          override fun intercept(response: Response) =
-              CompletableFuture.supplyAsync { onResponse(response) }
-        }
+    ): Javalin =
+        proxy(
+            Proxylin.async(
+                onRequest = { CompletableFuture.supplyAsync { onRequest(it) } },
+                onResponse = { CompletableFuture.supplyAsync { onResponse(it) } }))
 
     fun HttpClient.verifyGet(path: String, response: String) {
       assertEquals(response, get(path).use { it.body?.string() })

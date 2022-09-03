@@ -15,75 +15,107 @@ limitations under the License.
 */
 package io.github.cfraser.proxylin
 
+import java.io.IOException
 import java.util.concurrent.CompletableFuture
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Headers.Companion.toHeaders
+import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody
+
+/** [Proxier] is a function which executes proxy requests. */
+fun interface Proxier {
+
+  /**
+   * Execute the proxy [request].
+   *
+   * @param request the [Request] to execute
+   * @return the [Response]
+   * @throws Exception if execution of the proxy request fails
+   */
+  @Throws(Exception::class) fun execute(request: Request): Response
+
+  companion object {
+
+    /**
+     * Create an instance of [Proxier] which uses the [client] to make proxy requests.
+     *
+     * @param client the [OkHttpClient] to use to make HTTP requests
+     * @return the [Proxier]
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun create(client: OkHttpClient = OkHttpClient()): Proxier = ProxierImpl(client)
+  }
+}
+
+/** [AsyncProxier] is an asynchronous [Proxier]. */
+fun interface AsyncProxier {
+
+  /**
+   * Asynchronously execute the proxy [request].
+   *
+   * @param request the [Request] to execute
+   * @return the [CompletableFuture] of [Response]
+   */
+  fun execute(request: Request): CompletableFuture<Response>
+
+  companion object {
+
+    /**
+     * Create an instance of [AsyncProxier] which uses the [client] to make proxy requests
+     * asynchronously.
+     *
+     * @param client the [OkHttpClient] to use to make HTTP requests
+     * @return the [AsyncProxier]
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun create(client: OkHttpClient = OkHttpClient()): AsyncProxier = AsyncProxierImpl(client)
+  }
+}
 
 /**
- * [Proxier] manages the execution of proxy requests. Proxy requests and responses are intercepted
- * by the [interceptor].
+ * [ProxierImpl] is a [Proxier] implementation that use [OkHttpClient] to execute proxy requests.
  */
-sealed interface Proxier {
+private class ProxierImpl(private val client: OkHttpClient = OkHttpClient()) : Proxier {
 
-  /** The [Interceptor] to use to intercept proxy requests and responses. */
-  val interceptor: Interceptor
+  override fun execute(request: Request) =
+      client.newCall(request.toRequest()).execute().toResponse()
+}
 
-  /** [Proxier.Sync] is a synchronous [Proxier]. */
-  @JvmDefaultWithCompatibility
-  interface Sync : Proxier {
+/**
+ * [AsyncProxierImpl] is a [AsyncProxier] implementation that use [OkHttpClient] to execute proxy
+ * requests asynchronously.
+ */
+private class AsyncProxierImpl(private val client: OkHttpClient = OkHttpClient()) : AsyncProxier {
 
-    /** The synchronous [interceptor] to use to intercept proxy requests and responses. */
-    override val interceptor: Interceptor.Sync
+  override fun execute(request: Request) =
+      client.newCall(request.toRequest()).run {
+        CompletableFuture<Response>().apply {
+          enqueue(
+              object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                  completeExceptionally(e)
+                }
+                override fun onResponse(call: Call, response: okhttp3.Response) {
+                  complete(response.toResponse())
+                }
+              })
+        }
+      }
+}
 
-    /**
-     * Execute the proxy [request].
-     *
-     * @param request the [Request] to execute
-     * @return the [Response]
-     * @throws Exception if execution of the proxy request fails
-     */
-    @Throws(Exception::class) fun execute(request: Request): Response
+/** Convert the [Request] to an [okhttp3.Request]. */
+private fun Request.toRequest(): okhttp3.Request =
+    okhttp3.Request.Builder()
+        .url(url)
+        .method(method, body?.toRequestBody())
+        .headers(headers.toHeaders())
+        .build()
 
-    /**
-     * Proxy the [request].
-     *
-     * The [request] and [Response] are intercepted by the [interceptor].
-     *
-     * @param request the [Request] to proxy
-     * @return the [Response]
-     * @throws Exception if proxying the request fails
-     */
-    @Throws(Exception::class)
-    fun proxy(request: Request): Response =
-        execute(request.also(interceptor::intercept)).also(interceptor::intercept)
-  }
-
-  /** [Proxier.Async] is an asynchronous [Proxier]. */
-  @JvmDefaultWithCompatibility
-  interface Async : Proxier {
-
-    /** The asynchronous [interceptor] to use to intercept proxy requests and responses. */
-    override val interceptor: Interceptor.Async
-
-    /**
-     * Asynchronously execute the proxy [request].
-     *
-     * @param request the [Request] to execute
-     * @return the [CompletableFuture] of [Response]
-     */
-    fun execute(request: Request): CompletableFuture<Response>
-
-    /**
-     * Proxy the [request].
-     *
-     * The [request] and [Response] are intercepted by the [interceptor].
-     *
-     * @param request the [Request] to proxy
-     * @return the [Response]
-     */
-    fun proxy(request: Request): CompletableFuture<Response> =
-        interceptor
-            .intercept(request)
-            .thenApply { request }
-            .thenCompose { execute(it) }
-            .thenCompose { response -> interceptor.intercept(response).thenApply { response } }
-  }
+/** Convert the [okhttp3.Response] to a [Response]. */
+private fun okhttp3.Response.toResponse(): Response = use {
+  Response(it.code, it.headers.toMap(), it.body?.use(ResponseBody::bytes))
 }

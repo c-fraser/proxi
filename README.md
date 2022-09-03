@@ -8,15 +8,6 @@
 
 `proxylin` is a [javalin](https://javalin.io/) plugin enabling (forward) proxying capabilities.
 
-<!--- TOC -->
-
-* [Usage](#usage)
-* [Example](#example)
-* [License](#license)
-* [Acknowledgements](#acknowledgements)
-
-<!--- END -->
-
 ## Usage
 
 The `proxylin` library is accessible
@@ -30,6 +21,7 @@ then intercept the response.
 <!--- TEST_NAME Example01Test --> 
 
 <!--- INCLUDE
+import io.github.cfraser.proxylin.Interceptor
 import io.github.cfraser.proxylin.Proxylin
 import io.github.cfraser.proxylin.Response
 import io.javalin.Javalin
@@ -38,7 +30,6 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import java.net.InetSocketAddress
 import java.net.ProxySelector
-import java.util.function.Consumer
 import okhttp3.OkHttpClient.Builder as OkHttpClientBuilder
 import okhttp3.Request.Builder as RequestBuilder
 
@@ -54,7 +45,7 @@ MockWebServer().use { target ->
   target.enqueue(MockResponse().setBody("Hello!"))
   // Define a response interceptor to modify the proxy response.
   val interceptor =
-    Consumer<Response> { response ->
+    Interceptor<Response> { response ->
       // Print the response from the proxy request.
       response.body?.let(::String).also(::println)
       // Change the proxy response body.
