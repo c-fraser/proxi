@@ -22,6 +22,7 @@ import io.javalin.http.Header
 import io.javalin.http.HttpStatus
 import io.javalin.plugin.Plugin
 import io.javalin.routing.PathMatcher
+import java.net.URL
 import java.util.concurrent.CompletableFuture
 import kotlin.properties.Delegates.notNull
 
@@ -170,7 +171,11 @@ private sealed class ProxyHandler : Handler {
 
     /** Convert the [Context] to a [Request]. */
     private fun Context.toRequest(): Request =
-        Request(fullUrl(), method().name, headerMap(), bodyAsBytes().takeUnless(ByteArray::isEmpty))
+        Request(
+            URL(fullUrl()),
+            method().name,
+            headerMap(),
+            bodyAsBytes().takeUnless(ByteArray::isEmpty))
 
     /** Respond to the request with the [response]. */
     private fun Context.respond(response: Response) {

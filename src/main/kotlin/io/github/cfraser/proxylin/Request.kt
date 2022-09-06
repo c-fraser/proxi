@@ -15,17 +15,19 @@ limitations under the License.
 */
 package io.github.cfraser.proxylin
 
+import java.net.URL
+
 /**
  * [Request] is the HTTP request to be proxied.
  *
- * @property url the proxy request URL
+ * @property url the proxy request [URL]
  * @property method the proxy request method
  * @property headers the proxy request headers
  * @property body the proxy request body
  */
 class Request
 internal constructor(
-    @JvmField var url: String,
+    @JvmField var url: URL,
     @JvmField var method: String,
     @JvmField var headers: Map<String, String>,
     @JvmField var body: ByteArray?
