@@ -182,10 +182,11 @@ configure<NexusPublishExtension> {
 
 configure<JReleaserExtension> {
   project {
-    website.set("https://github.com/c-fraser/${rootProject.name}")
     authors.set(listOf("c-fraser"))
     license.set("Apache-2.0")
     extraProperties.put("inceptionYear", "2022")
+    description.set("Javalin proxy plugin")
+    links { homepage.set("https://github.com/c-fraser/${rootProject.name}") }
   }
 
   release {
