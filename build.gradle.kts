@@ -190,7 +190,7 @@ configure<JReleaserExtension> {
 
   release {
     github {
-      owner.set("c-fraser")
+      repoOwner.set("c-fraser")
       overwrite.set(true)
       token.set(System.getenv("GITHUB_TOKEN").orEmpty())
       changelog {

@@ -1,11 +1,11 @@
 [versions]
 kotlin = "1.7.10"
-javalin = "5.0.0.RC0"
+javalin = "5.0.0.RC2"
 okhttp = "4.10.0"
 slf4j = "2.0.0"
 junit = "5.9.0"
 knit = "0.4.0"
-ktfmt = "0.39"
+ktfmt = "0.40"
 
 [libraries]
 javalin = { module = "io.javalin:javalin", version.ref = "javalin" }
@@ -22,9 +22,9 @@ knit-test = { module = "org.jetbrains.kotlinx:kotlinx-knit-test", version.ref = 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 dokka = { id = "org.jetbrains.dokka", version.ref = "kotlin" }
-spotless = { id = "com.diffplug.spotless", version = "6.9.0" }
+spotless = { id = "com.diffplug.spotless", version = "6.10.0" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version = "1.21.0" }
 nexus-publish = { id = "io.github.gradle-nexus.publish-plugin", version = "1.1.0" }
-jreleaser = { id = "org.jreleaser", version = "1.1.0" }
+jreleaser = { id = "org.jreleaser", version = "1.2.0" }
 dependency-versions = { id = "com.github.ben-manes.versions", version = "0.42.0" }
-kover = { id = "org.jetbrains.kotlinx.kover", version = "0.5.1" }
+kover = { id = "org.jetbrains.kotlinx.kover", version = "0.6.0" }

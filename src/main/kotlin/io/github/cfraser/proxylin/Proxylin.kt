@@ -116,12 +116,13 @@ private sealed class ProxyHandler : Handler {
   ) : ProxyHandler() {
 
     override fun Context.proxy() {
-      val response =
-          CompletableFuture.supplyAsync { toRequest() }
-              .thenCompose { request -> onRequest.intercept(request).thenApply { request } }
-              .thenCompose { request -> proxier.execute(request) }
-              .thenCompose { response -> onResponse.intercept(response).thenApply { response } }
-      future(response) { respond(it) }
+      future {
+        CompletableFuture.supplyAsync { toRequest() }
+            .thenCompose { request -> onRequest.intercept(request).thenApply { request } }
+            .thenCompose { request -> proxier.execute(request) }
+            .thenCompose { response -> onResponse.intercept(response).thenApply { response } }
+            .thenAccept { response -> respond(response) }
+      }
     }
   }
 
