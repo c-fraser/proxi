@@ -31,20 +31,21 @@ import okhttp3.Request.Builder as RequestBuilder
 
 fun runExample01() { 
 
-// Initialize a mock web server which is the target for proxy requests.
+  // Initialize a mock web server which is the target for proxy requests.
 MockWebServer().use { target ->
   // Enqueue a mock response for the proxied request.
   target.enqueue(MockResponse().setBody("Hello!"))
   // Define a response interceptor to modify the proxy response.
-  val interceptor =
-    Interceptor<Response> { response ->
+  class ResponseInterceptor : Interceptor {
+    override fun intercept(response: Response) {
       // Print the response from the proxy request.
       response.body?.let(::String).also(::println)
       // Change the proxy response body.
       response.body = "Goodbye!".toByteArray()
     }
+  }
   // Initialize the `proxylin` plugin.
-  val plugin = Proxylin.create(onResponse = interceptor)
+  val plugin = Proxylin.plugin(ResponseInterceptor())
   // Create and start a `javalin` application with the `proxylin` plugin registered.
   Javalin.create { config -> config.plugins.register(plugin) }
     .start(0)

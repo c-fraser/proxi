@@ -82,7 +82,7 @@ fun interface AsyncProxier {
 private class ProxierImpl(private val client: OkHttpClient = OkHttpClient()) : Proxier {
 
   override fun execute(request: Request) =
-      client.newCall(request.toRequest()).execute().toResponse()
+      client.newCall(request.toRequest()).execute().toResponse(request)
 }
 
 /**
@@ -100,7 +100,7 @@ private class AsyncProxierImpl(private val client: OkHttpClient = OkHttpClient()
                   completeExceptionally(e)
                 }
                 override fun onResponse(call: Call, response: okhttp3.Response) {
-                  complete(response.toResponse())
+                  complete(response.toResponse(request))
                 }
               })
         }
@@ -116,6 +116,6 @@ private fun Request.toRequest(): okhttp3.Request =
         .build()
 
 /** Convert the [okhttp3.Response] to a [Response]. */
-private fun okhttp3.Response.toResponse(): Response = use {
-  Response(it.code, it.headers.toMap(), it.body?.use(ResponseBody::bytes))
+private fun okhttp3.Response.toResponse(request: Request): Response = use {
+  Response(request, it.code, it.headers.toMap(), it.body?.use(ResponseBody::bytes))
 }

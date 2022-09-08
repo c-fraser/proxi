@@ -25,8 +25,7 @@ import java.net.URL
  * @property headers the proxy request headers
  * @property body the proxy request body
  */
-class Request
-internal constructor(
+class Request(
     @JvmField var url: URL,
     @JvmField var method: String,
     @JvmField var headers: Map<String, String>,

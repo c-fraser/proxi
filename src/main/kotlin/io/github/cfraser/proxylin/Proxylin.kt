@@ -20,11 +20,15 @@ import io.javalin.http.Context
 import io.javalin.http.Handler
 import io.javalin.http.Header
 import io.javalin.http.HttpStatus
+import io.javalin.http.servlet.JavalinServlet
+import io.javalin.http.servlet.getBasicAuthCredentials
 import io.javalin.plugin.Plugin
-import io.javalin.routing.PathMatcher
+import io.javalin.security.BasicAuthCredentials
+import java.net.InetAddress
 import java.net.URL
 import java.util.concurrent.CompletableFuture
 import kotlin.properties.Delegates.notNull
+import org.eclipse.jetty.server.ServerConnector
 
 /**
  * [Proxylin] is a [Plugin] which enables a [Javalin] server to proxy requests.
@@ -39,7 +43,7 @@ class Proxylin private constructor(private val handler: ProxyHandler) : Plugin {
    * @param app the [Javalin] that is registering the [Proxylin] plugin
    */
   override fun apply(app: Javalin) {
-    handler.matcher = app.javalinServlet().matcher
+    handler.servlet = app.javalinServlet()
     app.after(handler)
   }
 
@@ -48,80 +52,98 @@ class Proxylin private constructor(private val handler: ProxyHandler) : Plugin {
     /**
      * Create an instance of the [Proxylin] plugin.
      *
+     * @param interceptors the [Array] of [Interceptor] to use to intercept proxy requests and
+     * responses. The first [Interceptor.interceptable] interceptor is used for each proxy request
      * @param proxier the [Proxier] to use to proxy requests
-     * @param onRequest the [Interceptor] function for proxy requests
-     * @param onResponse the [Interceptor] function for proxy responses
+     * @param credentials the [BasicAuthCredentials] required in the [Header.PROXY_AUTHORIZATION]
+     * header to proxy the request
      * @return the [Plugin]
      */
     @JvmStatic
     @JvmOverloads
-    fun create(
+    fun plugin(
+        vararg interceptors: Interceptor,
         proxier: Proxier = Proxier.create(),
-        onRequest: Interceptor<Request> = Interceptor {},
-        onResponse: Interceptor<Response> = Interceptor {}
-    ): Plugin = Proxylin(ProxyHandler.create(proxier, onRequest, onResponse))
+        credentials: BasicAuthCredentials? = null
+    ): Plugin = Proxylin(ProxyHandler.Sync(proxier, credentials, *interceptors))
 
     /**
      * Create an *asynchronous* instance of the [Proxylin] plugin.
      *
-     * @param proxier the [AsyncProxier] to use to proxy requests
-     * @param onRequest the [AsyncInterceptor] function for proxy requests
-     * @param onResponse the [AsyncInterceptor] function for proxy responses
+     * @param interceptors the [Array] of [AsyncInterceptor] to use to asynchronously intercept
+     * proxy requests and responses. The first [AsyncInterceptor.interceptable] interceptor is used
+     * for each proxy request
+     * @param proxier the [AsyncProxier] to use to asynchronously proxy requests
+     * @param credentials the [BasicAuthCredentials] required in the [Header.PROXY_AUTHORIZATION]
+     * header to proxy the request
      * @return the [Plugin]
      */
     @JvmStatic
     @JvmOverloads
-    fun async(
+    fun asyncPlugin(
+        vararg interceptors: AsyncInterceptor,
         proxier: AsyncProxier = AsyncProxier.create(),
-        onRequest: AsyncInterceptor<Request> = AsyncInterceptor {
-          CompletableFuture.completedFuture(Unit)
-        },
-        onResponse: AsyncInterceptor<Response> = AsyncInterceptor {
-          CompletableFuture.completedFuture(Unit)
-        }
-    ): Plugin = Proxylin(ProxyHandler.create(proxier, onRequest, onResponse))
+        credentials: BasicAuthCredentials? = null
+    ): Plugin = Proxylin(ProxyHandler.Async(proxier, credentials, *interceptors))
   }
 }
 
 /** [ProxyHandler] is a [Handler] for proxying requests. */
-private sealed class ProxyHandler : Handler {
+private sealed class ProxyHandler(private val credentials: BasicAuthCredentials?) : Handler {
 
-  var matcher by notNull<PathMatcher>()
+  var servlet by notNull<JavalinServlet>()
 
   override fun handle(ctx: Context) {
-    ctx.takeIf { it.isProxyRequest }?.proxy()
+    when {
+      !ctx.isProxyRequest -> return
+      !ctx.isAuthorized -> ctx.status(HttpStatus.UNAUTHORIZED)
+      else -> ctx.proxy()
+    }
   }
 
   /** Use the [Context] to execute the proxy request and respond with the response. */
   abstract fun Context.proxy()
 
   /** [ProxyHandler.Sync] is a synchronous [ProxyHandler]. */
-  private class Sync(
+  class Sync(
       private val proxier: Proxier,
-      private val onRequest: Interceptor<Request>,
-      private val onResponse: Interceptor<Response>
-  ) : ProxyHandler() {
+      credentials: BasicAuthCredentials?,
+      private vararg val interceptors: Interceptor
+  ) : ProxyHandler(credentials) {
 
     override fun Context.proxy() {
-      val request = toRequest().also(onRequest::intercept)
-      val response = proxier.execute(request).also(onResponse::intercept)
+      val request = toRequest()
+      val interceptor = interceptors.firstOrNull { it.interceptable(request) } ?: NO_OP_INTERCEPTOR
+      interceptor.intercept(request)
+      val response = proxier.execute(request)
+      interceptor.intercept(response)
       respond(response)
     }
   }
 
   /** [ProxyHandler.Async] is an asynchronous [ProxyHandler]. */
-  private class Async(
+  class Async(
       private val proxier: AsyncProxier,
-      private val onRequest: AsyncInterceptor<Request>,
-      private val onResponse: AsyncInterceptor<Response>
-  ) : ProxyHandler() {
+      credentials: BasicAuthCredentials?,
+      private vararg val interceptors: AsyncInterceptor
+  ) : ProxyHandler(credentials) {
 
     override fun Context.proxy() {
       future {
         CompletableFuture.supplyAsync { toRequest() }
-            .thenCompose { request -> onRequest.intercept(request).thenApply { request } }
-            .thenCompose { request -> proxier.execute(request) }
-            .thenCompose { response -> onResponse.intercept(response).thenApply { response } }
+            .thenApply { request ->
+              request to
+                  (interceptors.find { it.interceptable(request) } ?: NO_OP_ASYNC_INTERCEPTOR)
+            }
+            .thenCompose { (request, interceptor) ->
+              interceptor.intercept(request).thenApply { request to interceptor }
+            }
+            .thenCompose { (request, interceptor) ->
+              proxier.execute(request).thenApply { response -> response to interceptor }
+            }
+            .thenCompose { (response, interceptor) ->
+              interceptor.intercept(response).thenApply { response }
+            }
             .thenAccept { response -> respond(response) }
       }
     }
@@ -130,47 +152,45 @@ private sealed class ProxyHandler : Handler {
   /**
    * Determine whether the request should be proxied.
    *
-   * > If the [requestPath] is handled via an endpoint, then it shouldn't be proxied.
+   * > If the [requestPath] is handled via an endpoint or targets the local
+   * [io.javalin.config.PrivateConfig.server], then it shouldn't be proxied.
    */
   private val Context.isProxyRequest: Boolean
-    get() = method().isHttpMethod() && matcher.findEntries(method(), requestPath).isEmpty()
+    get() =
+        method().isHttpMethod() &&
+            servlet.matcher.findEntries(method(), requestPath).isEmpty() &&
+            (InetAddress.getByName(URL(url()).host).hostAddress !in LOCAL_ADDRESSES ||
+                servlet.cfg.pvt.server
+                    ?.connectors
+                    ?.mapNotNull { it as? ServerConnector }
+                    ?.none { it.localPort == port() }
+                    ?: true)
 
-  companion object {
+  /**
+   * Check if the request contains the [Header.PROXY_AUTHORIZATION] header matching the
+   * [credentials].
+   */
+  private val Context.isAuthorized: Boolean
+    get() =
+        credentials == null ||
+            credentials == getBasicAuthCredentials(header(Header.PROXY_AUTHORIZATION))
 
-    /**
-     * Create a synchronous [ProxyHandler].
-     *
-     * @param proxier the [Proxier] to use to proxy requests
-     * @param onRequest the [Interceptor] function for proxy requests
-     * @param onResponse the [Interceptor] function for proxy responses
-     * @return the [ProxyHandler]
-     */
-    fun create(
-        proxier: Proxier,
-        onRequest: Interceptor<Request>,
-        onResponse: Interceptor<Response>
-    ): ProxyHandler = Sync(proxier, onRequest, onResponse)
+  private companion object {
 
-    /**
-     * Create an asynchronous [ProxyHandler].
-     *
-     * @param proxier the [AsyncProxier] to use to proxy requests
-     * @param onRequest the [AsyncInterceptor] function for proxy requests
-     * @param onResponse the [AsyncInterceptor] function for proxy responses
-     * @return the [ProxyHandler]
-     */
-    fun create(
-        proxier: AsyncProxier = AsyncProxier.create(),
-        onRequest: AsyncInterceptor<Request>,
-        onResponse: AsyncInterceptor<Response>
-    ): ProxyHandler = Async(proxier, onRequest, onResponse)
+    val NO_OP_INTERCEPTOR = object : Interceptor {}
+    val NO_OP_ASYNC_INTERCEPTOR = object : AsyncInterceptor {}
+    val LOCAL_ADDRESSES =
+        setOf(
+            "localhost",
+            InetAddress.getLoopbackAddress().hostAddress,
+            InetAddress.getLocalHost().hostAddress)
 
     /** The [requestPath] is the [Context.path] without the [Context.contextPath] prefix. */
-    private val Context.requestPath: String
+    val Context.requestPath: String
       get() = path().removePrefix(contextPath())
 
     /** Convert the [Context] to a [Request]. */
-    private fun Context.toRequest(): Request =
+    fun Context.toRequest(): Request =
         Request(
             URL(fullUrl()),
             method().name,
@@ -178,7 +198,7 @@ private sealed class ProxyHandler : Handler {
             bodyAsBytes().takeUnless(ByteArray::isEmpty))
 
     /** Respond to the request with the [response]. */
-    private fun Context.respond(response: Response) {
+    fun Context.respond(response: Response) {
       status(HttpStatus.forStatus(response.statusCode))
       response.headers.forEach { (name, value) -> header(name, value) }
       response.body?.apply { header(Header.CONTENT_LENGTH, "$size") }?.also(this::result)

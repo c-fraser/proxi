@@ -18,12 +18,13 @@ package io.github.cfraser.proxylin
 /**
  * [Response] is the HTTP response for a proxy request.
  *
+ * @property request the proxy request the response is for
  * @property statusCode the proxy response status code
  * @property headers the proxy response headers
  * @property body the proxy response body
  */
-class Response
-internal constructor(
+class Response(
+    @JvmField val request: Request,
     @JvmField var statusCode: Int,
     @JvmField var headers: Map<String, String>,
     @JvmField var body: ByteArray?

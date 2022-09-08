@@ -18,14 +18,18 @@ package io.github.cfraser.proxylin
 import io.javalin.Javalin
 import io.javalin.http.Context
 import io.javalin.http.Header
+import io.javalin.http.HttpStatus
 import io.javalin.plugin.Plugin
+import io.javalin.security.BasicAuthCredentials
 import io.javalin.testtools.HttpClient
 import java.net.InetSocketAddress
 import java.net.ProxySelector
 import java.util.Base64
 import java.util.concurrent.CompletableFuture
 import kotlin.test.assertEquals
+import okhttp3.Credentials
 import okhttp3.OkHttpClient
+import okhttp3.ResponseBody
 import org.junit.jupiter.api.Test
 
 class ProxylinTest {
@@ -70,9 +74,41 @@ class ProxylinTest {
 
   @Test
   fun `matched request is not proxied`() {
-    proxy(Proxylin.create()).run(LOCAL_GET).start(0).use {
+    proxy(Proxylin.plugin()).run(LOCAL_GET).start(0).use {
       val client = HttpClient(it, OkHttpClient())
       client.verifyGet(LOCAL_PATH, LOCAL_DATA)
+    }
+  }
+
+  @Test
+  fun `unmatched local request is not proxied`() {
+    proxy(Proxylin.plugin()).start(0).use {
+      val client = HttpClient(it, OkHttpClient())
+      assertEquals(HttpStatus.NOT_FOUND.code, client.get("/").use { response -> response.code })
+    }
+  }
+
+  @Test
+  fun `proxy an authorized request`() {
+    test(proxy = proxy(Proxylin.plugin(credentials = BasicAuthCredentials(USERNAME, PASSWORD)))) {
+        client ->
+      assertEquals(
+          TARGET_DATA,
+          client
+              .get(TARGET_PATH) { request ->
+                request.header(
+                    Header.PROXY_AUTHORIZATION,
+                    Credentials.basic(USERNAME, PASSWORD, Charsets.UTF_8))
+              }
+              .use { response -> response.body?.use(ResponseBody::string) })
+    }
+  }
+
+  @Test
+  fun `unauthorized request is not proxied`() {
+    test(proxy = proxy(Proxylin.plugin(credentials = BasicAuthCredentials(USERNAME, PASSWORD)))) {
+        client ->
+      assertEquals(HttpStatus.UNAUTHORIZED.code, client.get("/").use { response -> response.code })
     }
   }
 
@@ -126,16 +162,25 @@ class ProxylinTest {
             .run(configurer)
 
     fun syncProxy(onRequest: (Request) -> Unit = {}, onResponse: (Response) -> Unit = {}): Javalin =
-        proxy(Proxylin.create(onRequest = onRequest, onResponse = onResponse))
+        proxy(
+            Proxylin.plugin(
+                object : Interceptor {
+                  override fun intercept(request: Request) = onRequest(request)
+                  override fun intercept(response: Response) = onResponse(response)
+                }))
 
     fun asyncProxy(
         onRequest: (Request) -> Unit = {},
         onResponse: (Response) -> Unit = {}
     ): Javalin =
         proxy(
-            Proxylin.async(
-                onRequest = { CompletableFuture.supplyAsync { onRequest(it) } },
-                onResponse = { CompletableFuture.supplyAsync { onResponse(it) } }))
+            Proxylin.asyncPlugin(
+                object : AsyncInterceptor {
+                  override fun intercept(request: Request) =
+                      CompletableFuture.supplyAsync<Void> { onRequest(request).let { null } }
+                  override fun intercept(response: Response) =
+                      CompletableFuture.supplyAsync<Void> { onResponse(response).let { null } }
+                }))
 
     fun HttpClient.verifyGet(path: String, response: String) {
       assertEquals(response, get(path).use { it.body?.string() })
