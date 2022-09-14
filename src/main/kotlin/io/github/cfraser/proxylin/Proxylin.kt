@@ -18,6 +18,7 @@ package io.github.cfraser.proxylin
 import io.javalin.Javalin
 import io.javalin.http.Context
 import io.javalin.http.Handler
+import io.javalin.http.HandlerType
 import io.javalin.http.Header
 import io.javalin.http.HttpStatus
 import io.javalin.http.servlet.JavalinServlet
@@ -95,9 +96,9 @@ private sealed class ProxyHandler(private val credentials: BasicAuthCredentials?
 
   override fun handle(ctx: Context) {
     when {
-      !ctx.isProxyRequest -> return
-      !ctx.isAuthorized -> ctx.status(HttpStatus.UNAUTHORIZED)
-      else -> ctx.proxy()
+      ctx.method() == HandlerType.CONNECT -> ctx.status(HttpStatus.NOT_IMPLEMENTED)
+      ctx.isProxyRequest ->
+          if (ctx.isAuthorized) ctx.proxy() else ctx.status(HttpStatus.UNAUTHORIZED)
     }
   }
 

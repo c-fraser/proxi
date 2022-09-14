@@ -1,3 +1,7 @@
+complexity:
+  NestedBlockDepth:
+    active: false
+
 style:
   ForbiddenVoid:
     active: false

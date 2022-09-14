@@ -6,7 +6,10 @@
 [![Javadoc](https://javadoc.io/badge2/io.github.c-fraser/proxylin/javadoc.svg)](https://javadoc.io/doc/io.github.c-fraser/proxylin)
 [![Apache License 2.0](https://img.shields.io/badge/License-Apache2-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-`proxylin` is a [javalin](https://javalin.io/) plugin enabling (forward) proxying capabilities.
+`proxylin` is a [javalin](https://javalin.io/) plugin enabling HTTP (forward) proxying capabilities.
+
+HTTPS [CONNECT](https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods/CONNECT) tunneling is
+**not** currently supported.
 
 ## Usage
 

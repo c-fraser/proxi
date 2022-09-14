@@ -22,26 +22,44 @@ import io.javalin.http.HttpStatus
 import io.javalin.plugin.Plugin
 import io.javalin.security.BasicAuthCredentials
 import io.javalin.testtools.HttpClient
+import io.ktor.network.tls.certificates.generateCertificate
 import java.net.InetSocketAddress
 import java.net.ProxySelector
+import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.CompletableFuture
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 import kotlin.test.assertEquals
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.ResponseBody
+import org.eclipse.jetty.server.Server
+import org.eclipse.jetty.server.ServerConnector
+import org.eclipse.jetty.util.ssl.SslContextFactory
+import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 
 class ProxylinTest {
 
   @Test
-  fun `proxy a request`() {
+  fun `proxy an HTTP request`() {
     test(proxy = syncProxy()) { it.verifyGet(TARGET_PATH, TARGET_DATA) }
+  }
+
+  @Disabled
+  @Test
+  fun `proxy an HTTPS request`() {
+    test(target = target(secure = true), secure = true, proxy = syncProxy()) {
+      it.verifyGet(TARGET_PATH, TARGET_DATA)
+    }
   }
 
   @Test
   fun `intercept proxy request`() {
-    test(target = target(AUTH_TARGET_GET), proxy = syncProxy(onRequest = USE_AUTH)) {
+    test(target = target(configurer = AUTH_TARGET_GET), proxy = syncProxy(onRequest = USE_AUTH)) {
       it.verifyGet(TARGET_PATH, TARGET_DATA)
     }
   }
@@ -54,13 +72,21 @@ class ProxylinTest {
   }
 
   @Test
-  fun `asynchronously proxy a request`() {
+  fun `asynchronously proxy an HTTP request`() {
     test(proxy = asyncProxy()) { it.verifyGet(TARGET_PATH, TARGET_DATA) }
+  }
+
+  @Disabled
+  @Test
+  fun `asynchronously proxy an HTTPS request`() {
+    test(target = target(secure = true), secure = true, proxy = asyncProxy()) {
+      it.verifyGet(TARGET_PATH, TARGET_DATA)
+    }
   }
 
   @Test
   fun `asynchronously intercept proxy request`() {
-    test(target = target(AUTH_TARGET_GET), proxy = asyncProxy(onRequest = USE_AUTH)) {
+    test(target = target(configurer = AUTH_TARGET_GET), proxy = asyncProxy(onRequest = USE_AUTH)) {
       it.verifyGet(TARGET_PATH, TARGET_DATA)
     }
   }
@@ -75,7 +101,7 @@ class ProxylinTest {
   @Test
   fun `matched request is not proxied`() {
     proxy(Proxylin.plugin()).run(LOCAL_GET).start(0).use {
-      val client = HttpClient(it, OkHttpClient())
+      val client = HttpClient(it, CLIENT)
       client.verifyGet(LOCAL_PATH, LOCAL_DATA)
     }
   }
@@ -83,7 +109,7 @@ class ProxylinTest {
   @Test
   fun `unmatched local request is not proxied`() {
     proxy(Proxylin.plugin()).start(0).use {
-      val client = HttpClient(it, OkHttpClient())
+      val client = HttpClient(it, CLIENT)
       assertEquals(HttpStatus.NOT_FOUND.code, client.get("/").use { response -> response.code })
     }
   }
@@ -114,13 +140,23 @@ class ProxylinTest {
 
   private companion object {
 
-    fun test(target: Javalin = target(), proxy: Javalin, testCase: (HttpClient) -> Unit) {
+    fun test(
+        target: Javalin = target(),
+        secure: Boolean = false,
+        proxy: Javalin,
+        testCase: (HttpClient) -> Unit,
+    ) {
       target.start(0).use { _target ->
         proxy.start(0).use { _proxy ->
           OkHttpClient.Builder()
               .proxySelector(ProxySelector.of(InetSocketAddress(_proxy.port())))
+              .run { if (secure) USE_KEYSTORE() else this }
               .build()
-              .let { HttpClient(_target, it) }
+              .let {
+                HttpClient(_target, it).apply {
+                  if (secure) origin = origin.replace("http", "https")
+                }
+              }
               .also(testCase)
         }
       }
@@ -134,6 +170,7 @@ class ProxylinTest {
     const val USERNAME = "test-user"
     const val PASSWORD = "p@\$sW0rD"
 
+    val CLIENT = OkHttpClient()
     val TARGET_GET: Javalin.() -> Javalin = { get(TARGET_PATH) { it.result(TARGET_DATA) } }
     val LOCAL_GET: Javalin.() -> Javalin = { get(LOCAL_PATH) { it.result(LOCAL_DATA) } }
     val AUTH_TARGET_GET: Javalin.() -> Javalin = {
@@ -150,9 +187,43 @@ class ProxylinTest {
                       "Basic ${Base64.getEncoder().encodeToString("$USERNAME:$PASSWORD".toByteArray())}")
     }
     val USE_INTERCEPTED_DATA: (Response) -> Unit = { it.body = INTERCEPTED_DATA.toByteArray() }
+    val KEYSTORE =
+        generateCertificate(keyAlias = USERNAME, keyPassword = PASSWORD, jksPassword = PASSWORD)
+    val USE_KEYSTORE: OkHttpClient.Builder.() -> OkHttpClient.Builder = {
+      val trustManagerFactory =
+          TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply {
+            init(KEYSTORE)
+          }
+      val keyManagerFactory =
+          KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply {
+            init(KEYSTORE, PASSWORD.toCharArray())
+          }
+      val sslContext =
+          SSLContext.getInstance("TLS").apply {
+            init(keyManagerFactory.keyManagers, trustManagerFactory.trustManagers, SecureRandom())
+          }
+      sslSocketFactory(
+          sslContext.socketFactory, trustManagerFactory.trustManagers.first() as X509TrustManager)
+    }
 
-    fun target(configurer: Javalin.() -> Javalin = TARGET_GET): Javalin =
-        Javalin.create { it.showJavalinBanner = false }.run(configurer)
+    fun target(secure: Boolean = false, configurer: Javalin.() -> Javalin = TARGET_GET): Javalin =
+        Javalin.create {
+              if (secure)
+                  it.jetty.server {
+                    Server().apply {
+                      val sslContextFactory =
+                          SslContextFactory.Server().apply {
+                            keyStore = KEYSTORE
+                            keyStorePassword = PASSWORD
+                          }
+                      val sslConnector =
+                          ServerConnector(server, sslContextFactory).apply { port = 443 }
+                      connectors = arrayOf(sslConnector)
+                    }
+                  }
+              it.showJavalinBanner = false
+            }
+            .run(configurer)
 
     fun proxy(plugin: Plugin, configurer: Javalin.() -> Javalin = { this }): Javalin =
         Javalin.create {
@@ -161,7 +232,10 @@ class ProxylinTest {
             }
             .run(configurer)
 
-    fun syncProxy(onRequest: (Request) -> Unit = {}, onResponse: (Response) -> Unit = {}): Javalin =
+    fun syncProxy(
+        onRequest: (Request) -> Unit = {},
+        onResponse: (Response) -> Unit = {},
+    ): Javalin =
         proxy(
             Proxylin.plugin(
                 object : Interceptor {
@@ -171,7 +245,7 @@ class ProxylinTest {
 
     fun asyncProxy(
         onRequest: (Request) -> Unit = {},
-        onResponse: (Response) -> Unit = {}
+        onResponse: (Response) -> Unit = {},
     ): Javalin =
         proxy(
             Proxylin.asyncPlugin(
@@ -183,7 +257,7 @@ class ProxylinTest {
                 }))
 
     fun HttpClient.verifyGet(path: String, response: String) {
-      assertEquals(response, get(path).use { it.body?.string() })
+      assertEquals(response, get(path).use { it.body?.use(ResponseBody::string) })
     }
 
     fun Context.checkAuth(username: String = USERNAME, password: String = PASSWORD) {

@@ -59,6 +59,7 @@ repositories { mavenCentral() }
 dependencies {
   compileOnly(libs.javalin)
   compileOnly(libs.slf4j.api)
+  /*implementation(libs.jetty.proxy)*/
   implementation(libs.okhttp)
 
   testImplementation(kotlin("test"))
@@ -69,6 +70,7 @@ dependencies {
   testImplementation(libs.javalin.testtools)
   testImplementation(libs.slf4j.nop)
   testImplementation(libs.knit.test)
+  testImplementation(libs.ktor.certificates)
 }
 
 val kotlinSourceFiles by lazy {
