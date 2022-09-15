@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "0.4.0"
+  version = "0.5.0"
 }
 
 java {
@@ -59,8 +59,8 @@ repositories { mavenCentral() }
 dependencies {
   compileOnly(libs.javalin)
   compileOnly(libs.slf4j.api)
-  /*implementation(libs.jetty.proxy)*/
   implementation(libs.okhttp)
+  /*implementation(libs.jetty.proxy)*/
 
   testImplementation(kotlin("test"))
   testImplementation(libs.junit.jupiter)
