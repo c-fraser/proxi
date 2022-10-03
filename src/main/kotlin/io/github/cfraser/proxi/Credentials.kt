@@ -13,21 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package io.github.cfraser.proxylin
+package io.github.cfraser.proxi
 
-import java.net.URL
-
-/**
- * [Request] is the HTTP request to be proxied.
- *
- * @property url the proxy request [URL]
- * @property method the proxy request method
- * @property headers the proxy request headers
- * @property body the proxy request body
- */
-class Request(
-    @JvmField var url: URL,
-    @JvmField var method: String,
-    @JvmField var headers: Map<String, String>,
-    @JvmField var body: ByteArray?
-)
+/** The [Credentials] for HTTP basic authorization. */
+data class Credentials(val username: String, val password: String)

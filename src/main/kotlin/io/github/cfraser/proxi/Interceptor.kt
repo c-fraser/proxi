@@ -13,13 +13,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package io.github.cfraser.proxylin
-
-import java.util.concurrent.CompletableFuture
+package io.github.cfraser.proxi
 
 /**
  * [Interceptor] intercepts a proxy request and the corresponding response. The interception of
  * mutable [Request] and [Response] enables the dynamic transformation of proxied data.
+ *
+ * An [Interceptor] may intercept requests and responses concurrently. If the [Interceptor]
+ * implementation is not stateless, then synchronization is required.
  */
 @JvmDefaultWithCompatibility
 interface Interceptor {
@@ -27,7 +28,7 @@ interface Interceptor {
   /**
    * Determine whether the [request] should be intercepted.
    *
-   * @param request the proxy request capable of being intercepted
+   * @param request the proxy [Request] capable of being intercepted
    * @return `true` if the request and response should be intercepted, otherwise `false`
    */
   fun interceptable(request: Request): Boolean = true
@@ -47,34 +48,4 @@ interface Interceptor {
    * @throws Exception if response interception fails
    */
   @Throws(Exception::class) fun intercept(response: Response) {}
-}
-
-/** [AsyncInterceptor] is an asynchronous [Interceptor]. */
-@JvmDefaultWithCompatibility
-interface AsyncInterceptor {
-
-  /**
-   * Synchronously determine whether the [request] should be intercepted.
-   *
-   * @param request the proxy request capable of being intercepted
-   * @return `true` if the request and response should be intercepted, otherwise `false`
-   */
-  fun interceptable(request: Request): Boolean = true
-
-  /**
-   * Asynchronously intercept the [request] before it is executed.
-   *
-   * @param request the intercepted [Request]
-   * @return the [CompletableFuture] of [Unit]
-   */
-  fun intercept(request: Request): CompletableFuture<Void> = CompletableFuture.completedFuture(null)
-
-  /**
-   * Asynchronously intercept the [response] after it is received.
-   *
-   * @param response the intercepted [Response]
-   * @return the [CompletableFuture] of [Unit]
-   */
-  fun intercept(response: Response): CompletableFuture<Void> =
-      CompletableFuture.completedFuture(null)
 }

@@ -13,12 +13,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package io.github.cfraser.proxylin
+package io.github.cfraser.proxi
 
 /**
- * [Response] is the HTTP response for a proxy request.
+ * [Response] is the HTTP response for a proxy [request].
  *
- * @property request the proxy request the response is for
+ * @property request the executed proxy [Request]
  * @property statusCode the proxy response status code
  * @property headers the proxy response headers
  * @property body the proxy response body

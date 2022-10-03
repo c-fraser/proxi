@@ -1,20 +1,18 @@
-# proxylin
+# proxi
 
-[![Test](https://github.com/c-fraser/proxylin/workflows/Test/badge.svg)](https://github.com/c-fraser/proxylin/actions)
-[![Release](https://img.shields.io/github/v/release/c-fraser/proxylin?logo=github&sort=semver)](https://github.com/c-fraser/proxylin/releases)
-[![Maven Central](https://img.shields.io/maven-central/v/io.github.c-fraser/proxylin.svg)](https://search.maven.org/search?q=g:io.github.c-fraser%20AND%20a:proxylin)
-[![Javadoc](https://javadoc.io/badge2/io.github.c-fraser/proxylin/javadoc.svg)](https://javadoc.io/doc/io.github.c-fraser/proxylin)
+[![Test](https://github.com/c-fraser/proxi/workflows/Test/badge.svg)](https://github.com/c-fraser/proxi/actions)
+[![Release](https://img.shields.io/github/v/release/c-fraser/proxi?logo=github&sort=semver)](https://github.com/c-fraser/proxi/releases)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.c-fraser/proxi.svg)](https://search.maven.org/search?q=g:io.github.c-fraser%20AND%20a:proxi)
+[![Javadoc](https://javadoc.io/badge2/io.github.c-fraser/proxi/javadoc.svg)](https://javadoc.io/doc/io.github.c-fraser/proxi)
 [![Apache License 2.0](https://img.shields.io/badge/License-Apache2-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-`proxylin` is a [javalin](https://javalin.io/) plugin enabling HTTP (forward) proxying capabilities.
-
-HTTPS [CONNECT](https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods/CONNECT) tunneling is
-**not** currently supported.
+`proxi` is an HTTP(S) 1.x proxy server which enables traffic to be intercepted and dynamically
+transformed.
 
 ## Usage
 
-The `proxylin` library is accessible
-via [Maven Central](https://search.maven.org/search?q=g:io.github.c-fraser%20AND%20a:proxylin).
+The `proxi` library is accessible
+via [Maven Central](https://search.maven.org/search?q=g:io.github.c-fraser%20AND%20a:proxi).
 
 ## Example
 
@@ -24,17 +22,16 @@ then intercept the response.
 <!--- TEST_NAME Example01Test --> 
 
 <!--- INCLUDE
-import io.github.cfraser.proxylin.Interceptor
-import io.github.cfraser.proxylin.Proxylin
-import io.github.cfraser.proxylin.Response
-import io.javalin.Javalin
+import io.github.cfraser.proxi.Interceptor
+import io.github.cfraser.proxi.Response
+import io.github.cfraser.proxi.Server
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.ResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import java.net.InetSocketAddress
 import java.net.ProxySelector
-import okhttp3.OkHttpClient.Builder as OkHttpClientBuilder
-import okhttp3.Request.Builder as RequestBuilder
 
 fun runExample01() { 
 ----- SUFFIX 
@@ -42,7 +39,7 @@ fun runExample01() {
 -->
 
 ```kotlin
-  // Initialize a mock web server which is the target for proxy requests.
+// Initialize a mock web server which is the target for proxy requests.
 MockWebServer().use { target ->
   // Enqueue a mock response for the proxied request.
   target.enqueue(MockResponse().setBody("Hello!"))
@@ -55,24 +52,18 @@ MockWebServer().use { target ->
       response.body = "Goodbye!".toByteArray()
     }
   }
-  // Initialize the `proxylin` plugin.
-  val plugin = Proxylin.plugin(ResponseInterceptor())
-  // Create and start a `javalin` application with the `proxylin` plugin registered.
-  Javalin.create { config -> config.plugins.register(plugin) }
-    .start(0)
-    .use { proxy ->
-      // Initialize an HTTP client that proxies to the `javalin` server.
-      val client =
-        OkHttpClientBuilder()
-          .proxySelector(ProxySelector.of(InetSocketAddress(proxy.port())))
-          .build()
-      // The HTTP request to the target, which will be proxied by `proxylin`.
-      val request = RequestBuilder().url(target.url("/hello")).build()
-      // Execute the request then print the response.
-      client.newCall(request).execute().use { response ->
-        response.body?.use(ResponseBody::string)?.also(::println)
-      }
+  // Create and start the proxy server.
+  Server.create(ResponseInterceptor()).start(8787).use {
+    // Initialize an HTTP client that uses the proxy server.
+    val client =
+      OkHttpClient.Builder().proxySelector(ProxySelector.of(InetSocketAddress(8787))).build()
+    // The HTTP request to the target, which will be proxied by server.
+    val request = Request.Builder().url(target.url("/hello")).build()
+    // Execute the request then print the response.
+    client.newCall(request).execute().use { response ->
+      response.body?.use(ResponseBody::string)?.also(::println)
     }
+  }
 }
 ```
 
@@ -99,7 +90,3 @@ Goodbye!
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
     See the License for the specific language governing permissions and
     limitations under the License.
-
-## Acknowledgements
-
-Kudos to the [javalin](https://github.com/javalin/javalin) project for making `proxylin` possible.

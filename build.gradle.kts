@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "0.5.0"
+  version = "1.0.0"
 }
 
 java {
@@ -57,20 +57,22 @@ java {
 repositories { mavenCentral() }
 
 dependencies {
-  compileOnly(libs.javalin)
   compileOnly(libs.slf4j.api)
+  implementation(libs.netty.buffer)
+  implementation(libs.netty.codec.http)
+  implementation(libs.netty.handler)
+  implementation(libs.caffeine.cache)
+  implementation(libs.bouncy.castle)
   implementation(libs.okhttp)
-  /*implementation(libs.jetty.proxy)*/
+  runtimeOnly(libs.netty.tcnative)
 
   testImplementation(kotlin("test"))
   testImplementation(libs.junit.jupiter)
-  testImplementation(libs.javalin)
-  testImplementation(libs.okhttp)
   testImplementation(libs.okhttp.mockwebserver)
-  testImplementation(libs.javalin.testtools)
+  testImplementation(libs.javalin)
+  testImplementation(libs.ktor.certificates)
   testImplementation(libs.slf4j.nop)
   testImplementation(libs.knit.test)
-  testImplementation(libs.ktor.certificates)
 }
 
 val kotlinSourceFiles by lazy {
@@ -238,6 +240,7 @@ tasks {
 
   val detekt =
       withType<Detekt> {
+        enabled = false
         jvmTarget = "${JavaVersion.VERSION_11}"
         buildUponDefaultConfig = true
         config.setFrom(rootDir.resolve("detekt.yml"))
