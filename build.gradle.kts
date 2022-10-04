@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "1.0.0"
+  version = "1.0.1"
 }
 
 java {
@@ -57,13 +57,13 @@ java {
 repositories { mavenCentral() }
 
 dependencies {
+  api(libs.okhttp)
   compileOnly(libs.slf4j.api)
   implementation(libs.netty.buffer)
   implementation(libs.netty.codec.http)
   implementation(libs.netty.handler)
   implementation(libs.caffeine.cache)
   implementation(libs.bouncy.castle)
-  implementation(libs.okhttp)
   runtimeOnly(libs.netty.tcnative)
 
   testImplementation(kotlin("test"))
