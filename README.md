@@ -90,3 +90,8 @@ Goodbye!
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
     See the License for the specific language governing permissions and
     limitations under the License.
+
+## Acknowledgements
+
+Kudos to the [proxyee](https://github.com/monkeyWie/proxyee) project which significantly influenced
+the implementation of `proxi`.
