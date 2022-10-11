@@ -15,8 +15,10 @@ limitations under the License.
 */
 package io.github.cfraser.proxi
 
+import io.github.cfraser.proxi.ServerTest.ErrorInterceptor.Intercept
 import io.javalin.Javalin
 import io.ktor.network.tls.certificates.generateCertificate
+import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory
 import java.net.InetSocketAddress
 import java.net.ProxySelector
@@ -64,7 +66,7 @@ class ServerTest {
 
   @Test
   fun `unauthorized HTTP request is not proxied`() {
-    verifyServer(credentials = Credentials(USERNAME, PASSWORD), authorized = false)
+    verifyServer(credentials = Credentials(USERNAME, PASSWORD), error = ProxyError.UNAUTHORIZED)
   }
 
   @Test
@@ -83,6 +85,21 @@ class ServerTest {
   }
 
   @Test
+  fun `failed to execute HTTP proxy request`() {
+    verifyServer(error = ProxyError.REQUEST_FAILURE)
+  }
+
+  @Test
+  fun `failed to intercept HTTP proxy request`() {
+    verifyServer(ErrorInterceptor(Intercept.REQUEST), error = ProxyError.INTERCEPT_FAILURE)
+  }
+
+  @Test
+  fun `failed to intercept HTTP proxy response`() {
+    verifyServer(ErrorInterceptor(Intercept.RESPONSE), error = ProxyError.INTERCEPT_FAILURE)
+  }
+
+  @Test
   fun `proxy an HTTPS request`() {
     verifyServer(secure = true)
   }
@@ -94,7 +111,10 @@ class ServerTest {
 
   @Test
   fun `unauthorized HTTPS request is not proxied`() {
-    verifyServer(secure = true, credentials = Credentials(USERNAME, PASSWORD), authorized = false)
+    verifyServer(
+        secure = true,
+        credentials = Credentials(USERNAME, PASSWORD),
+        error = ProxyError.UNAUTHORIZED)
   }
 
   @Test
@@ -110,6 +130,23 @@ class ServerTest {
   @Test
   fun `first interceptor intercepts an HTTPS request`() {
     verifyServer(RequestInterceptor, FailInterceptor, secure = true)
+  }
+
+  @Test
+  fun `failed to execute HTTPS proxy request`() {
+    verifyServer(secure = true, error = ProxyError.REQUEST_FAILURE)
+  }
+
+  @Test
+  fun `failed to intercept HTTPS proxy request`() {
+    verifyServer(
+        ErrorInterceptor(Intercept.REQUEST), secure = true, error = ProxyError.INTERCEPT_FAILURE)
+  }
+
+  @Test
+  fun `failed to intercept HTTPS proxy response`() {
+    verifyServer(
+        ErrorInterceptor(Intercept.RESPONSE), secure = true, error = ProxyError.INTERCEPT_FAILURE)
   }
 
   private object RequestInterceptor : Interceptor {
@@ -133,10 +170,36 @@ class ServerTest {
   private object FailInterceptor : Interceptor {
 
     override fun interceptable(request: Request) = request.method == "POST"
+
     override fun intercept(request: Request) =
         fail("${FailInterceptor::class.simpleName} intercepted request")
+
     override fun intercept(response: Response) =
         fail("${FailInterceptor::class.simpleName} intercepted response")
+  }
+
+  private class ErrorInterceptor(private val intercept: Intercept) : Interceptor {
+
+    enum class Intercept {
+      REQUEST,
+      RESPONSE
+    }
+
+    override fun intercept(request: Request) {
+      if (intercept == Intercept.REQUEST)
+          error("${ErrorInterceptor::class.simpleName} intercepted request")
+    }
+
+    override fun intercept(response: Response) {
+      if (intercept == Intercept.RESPONSE)
+          error("${ErrorInterceptor::class.simpleName} intercepted response")
+    }
+  }
+
+  private enum class ProxyError(val responseStatus: HttpResponseStatus) {
+    UNAUTHORIZED(HttpResponseStatus.UNAUTHORIZED),
+    REQUEST_FAILURE(HttpResponseStatus.BAD_GATEWAY),
+    INTERCEPT_FAILURE(HttpResponseStatus.INTERNAL_SERVER_ERROR)
   }
 
   private companion object {
@@ -163,27 +226,31 @@ class ServerTest {
         vararg interceptors: Interceptor,
         secure: Boolean = false,
         credentials: Credentials? = null,
-        authorized: Boolean = true
+        error: ProxyError? = null
     ) {
       webServer(secure = secure) { baseUrl ->
-        if (secure)
-            Server.create(
+        val proxier =
+            error
+                ?.takeIf { it == ProxyError.REQUEST_FAILURE }
+                ?.let { Proxier { error("Failed to proxy request") } }
+        val (server, client) =
+            if (secure)
+                Server.create(
                     *interceptors,
-                    proxier =
-                        Proxier.create(
-                            newClient(proxy = null, sslSocketFactory = insecureSSLSocketFactory())),
+                    proxier = proxier
+                            ?: Proxier.create(
+                                newClient(
+                                    proxy = null, sslSocketFactory = insecureSSLSocketFactory())),
                     certificatePath = PROXY_CERTIFICATE,
                     privateKeyPath = PROXY_PRIVATE_KEY,
-                    credentials = credentials)
-                .apply { start(PORT) }
-                .use {
-                  newClient(sslSocketFactory = CLIENT_SOCKET_FACTORY to CLIENT_TRUST_MANGER)
-                      .proxyRequests(baseUrl, interceptors, credentials, authorized)
-                }
-        else
-            Server.create(*interceptors, credentials = credentials).start(PORT).use {
-              newClient().proxyRequests(baseUrl, interceptors, credentials, authorized)
-            }
+                    credentials = credentials) to
+                    newClient(sslSocketFactory = CLIENT_SOCKET_FACTORY to CLIENT_TRUST_MANGER)
+            else
+                Server.create(*interceptors, proxier = proxier, credentials = credentials) to
+                    newClient()
+        server.start(PORT).use {
+          client.proxyRequests(baseUrl, interceptors, credentials, error?.responseStatus)
+        }
       }
     }
 
@@ -291,17 +358,25 @@ class ServerTest {
         baseUrl: String,
         interceptors: Array<out Interceptor>,
         credentials: Credentials?,
-        authorized: Boolean
+        responseStatus: HttpResponseStatus? = null
     ) {
-      if (authorized) {
-        assertEquals(TARGET_DATA, get("$baseUrl$TARGET_PATH", credentials))
-        assertEquals(
-            if (interceptors.isEmpty()) TARGET_DATA else INTERCEPTED_DATA,
-            post("$baseUrl$TARGET_PATH", TARGET_DATA, credentials))
-      } else
+      when {
+        responseStatus != null ->
+            assertEquals(
+                responseStatus.code(),
+                OkRequest.Builder()
+                    .url("$baseUrl$TARGET_PATH")
+                    .build()
+                    .let(::newCall)
+                    .execute()
+                    .code)
+        else -> {
+          assertEquals(TARGET_DATA, get("$baseUrl$TARGET_PATH", credentials))
           assertEquals(
-              401,
-              OkRequest.Builder().url("$baseUrl$TARGET_PATH").build().let(::newCall).execute().code)
+              if (interceptors.isEmpty()) TARGET_DATA else INTERCEPTED_DATA,
+              post("$baseUrl$TARGET_PATH", TARGET_DATA, credentials))
+        }
+      }
     }
   }
 }

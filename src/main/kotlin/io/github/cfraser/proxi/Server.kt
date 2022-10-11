@@ -269,7 +269,7 @@ class Server private constructor(private val handler: ChannelHandler) : Closeabl
                   if (method() == HttpMethod.CONNECT) handleConnect(ctx) else handleProxy(ctx)
                 }
                 ?.onFailure {
-                  LOGGER.error("Failed to proxy HTTP request", it)
+                  LOGGER.error("Failed to proxy HTTP(S) request", it)
                   ctx.channel().close()
                 }
         is ByteBuf ->
@@ -322,22 +322,38 @@ class Server private constructor(private val handler: ChannelHandler) : Closeabl
     /** Handle the proxying of the [FullHttpRequest]. */
     private fun HttpRequest.handleProxy(ctx: ChannelHandlerContext) {
       check(this is FullHttpRequest) { "Unexpected HTTP request" }
-      if (!isAuthorized(ctx)) return
+      if (!isAuthorized()) {
+        ctx.writeStatus(HttpResponseStatus.UNAUTHORIZED)
+        ReferenceCountUtil.release(this)
+        return
+      }
       val request =
           Request(
               URL(destination?.run { "https://$host:$port${uri()}" } ?: uri()),
               method().name(),
               headers().associate { (key, value) -> key to value },
               ByteBufUtil.getBytes(content()))
-      executor.execute {
+      executor.execute proxy@{
         val interceptor = interceptors.find { it.interceptable(request) } ?: object : Interceptor {}
         request
             .runCatching { also(interceptor::intercept) }
-            .onFailure { LOGGER.error("Failed to intercept request", it) }
+            .onFailure {
+              LOGGER.error("Failed to intercept request", it)
+              ctx.writeStatus(HttpResponseStatus.INTERNAL_SERVER_ERROR)
+              return@proxy
+            }
             .mapCatching(proxier::execute)
-            .onFailure { LOGGER.error("Failed to execute proxy request", it) }
+            .onFailure {
+              LOGGER.error("Failed to execute proxy request", it)
+              ctx.writeStatus(HttpResponseStatus.BAD_GATEWAY)
+              return@proxy
+            }
             .mapCatching { it.also(interceptor::intercept) }
-            .onFailure { LOGGER.error("Failed to intercept response", it) }
+            .onFailure {
+              LOGGER.error("Failed to intercept response", it)
+              ctx.writeStatus(HttpResponseStatus.INTERNAL_SERVER_ERROR)
+              return@proxy
+            }
             .onSuccess {
               ctx.writeAndFlush(
                   DefaultFullHttpResponse(
@@ -356,24 +372,17 @@ class Server private constructor(private val handler: ChannelHandler) : Closeabl
 
     /**
      * Check if the [HttpRequest] contains the [HttpHeaderNames.PROXY_AUTHORIZATION] header matching
-     * the [credentials]. If not, stop processing the request and respond with
-     * [HttpResponseStatus.UNAUTHORIZED].
+     * the [credentials].
      */
-    private fun HttpRequest.isAuthorized(ctx: ChannelHandlerContext): Boolean =
-        (credentials == null ||
-                credentials ==
-                    headers()[HttpHeaderNames.PROXY_AUTHORIZATION]
-                        ?.takeIf { it.startsWith("Basic ") }
-                        ?.removePrefix("Basic ")
-                        ?.let { Base64.getDecoder().decode(it).decodeToString() }
-                        ?.split(':', limit = 2)
-                        ?.let { (username, password) -> Credentials(username, password) })
-            .also {
-              if (!it) {
-                ctx.writeStatus(HttpResponseStatus.UNAUTHORIZED)
-                ReferenceCountUtil.release(this)
-              }
-            }
+    private fun HttpRequest.isAuthorized(): Boolean =
+        credentials == null ||
+            credentials ==
+                headers()[HttpHeaderNames.PROXY_AUTHORIZATION]
+                    ?.takeIf { it.startsWith("Basic ") }
+                    ?.removePrefix("Basic ")
+                    ?.let { Base64.getDecoder().decode(it).decodeToString() }
+                    ?.split(':', limit = 2)
+                    ?.let { (username, password) -> Credentials(username, password) }
 
     /** Handle the received [ByteBuf]. */
     private fun ByteBuf.handleTLSHandshake(ctx: ChannelHandlerContext) {
@@ -426,6 +435,7 @@ class Server private constructor(private val handler: ChannelHandler) : Closeabl
       private val BOUNCY_CASTLE_PROVIDER by
           lazy<Provider> { BouncyCastleProvider().also { Security.addProvider(it) } }
 
+      /** The [JcaPEMKeyConverter] to use to extract keys from certificates. */
       private val PEM_CONVERTER by
           lazy<JcaPEMKeyConverter> { JcaPEMKeyConverter().setProvider(BOUNCY_CASTLE_PROVIDER) }
 
