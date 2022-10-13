@@ -30,4 +30,7 @@ class Request(
     @JvmField var method: String,
     @JvmField var headers: Map<String, String>,
     @JvmField var body: ByteArray?
-)
+) {
+
+  override fun toString() = "$method $url"
+}

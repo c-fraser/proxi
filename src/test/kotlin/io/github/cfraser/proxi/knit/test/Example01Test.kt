@@ -25,8 +25,8 @@ class Example01Test {
   @Test
   fun testExample01() {
   captureOutput("Example01") { io.github.cfraser.proxi.knit.runExample01() }.verifyOutputLines(
-      "Hello!",
-      "Goodbye!"
+      "Intercepted: Hello!",
+      "Received: Goodbye!"
   )
   }
 }

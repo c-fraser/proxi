@@ -47,7 +47,7 @@ MockWebServer().use { target ->
   class ResponseInterceptor : Interceptor {
     override fun intercept(response: Response) {
       // Print the response from the proxy request.
-      response.body?.let(::String).also(::println)
+      response.body?.let(::String)?.also { println("Intercepted: $it") }
       // Change the proxy response body.
       response.body = "Goodbye!".toByteArray()
     }
@@ -61,15 +61,15 @@ MockWebServer().use { target ->
     val request = Request.Builder().url(target.url("/hello")).build()
     // Execute the request then print the response.
     client.newCall(request).execute().use { response ->
-      response.body?.use(ResponseBody::string)?.also(::println)
+      response.body?.use(ResponseBody::string)?.also { println("Received: $it") }
     }
   }
 }
 ```
 
 ```text
-Hello!
-Goodbye!
+Intercepted: Hello!
+Received: Goodbye!
 ```
 
 <!--- KNIT Example01.kt -->

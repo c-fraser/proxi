@@ -18,6 +18,7 @@ package io.github.cfraser.proxi
 import io.github.cfraser.proxi.ServerTest.ErrorInterceptor.Intercept
 import io.javalin.Javalin
 import io.ktor.network.tls.certificates.generateCertificate
+import io.netty.handler.codec.http.HttpHeaderNames
 import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory
 import java.net.InetSocketAddress
@@ -149,6 +150,16 @@ class ServerTest {
         ErrorInterceptor(Intercept.RESPONSE), secure = true, error = ProxyError.INTERCEPT_FAILURE)
   }
 
+  @Test
+  fun `failed to decode proxy request (URI too long)`() {
+    verifyServer(error = ProxyError.URI_TOO_LONG)
+  }
+
+  @Test
+  fun `failed to decode proxy request (header fields too large)`() {
+    verifyServer(error = ProxyError.HEADER_FIELDS_TOO_LARGE)
+  }
+
   private object RequestInterceptor : Interceptor {
 
     override fun interceptable(request: Request) = request.method == "POST"
@@ -199,7 +210,9 @@ class ServerTest {
   private enum class ProxyError(val responseStatus: HttpResponseStatus) {
     UNAUTHORIZED(HttpResponseStatus.UNAUTHORIZED),
     REQUEST_FAILURE(HttpResponseStatus.BAD_GATEWAY),
-    INTERCEPT_FAILURE(HttpResponseStatus.INTERNAL_SERVER_ERROR)
+    INTERCEPT_FAILURE(HttpResponseStatus.INTERNAL_SERVER_ERROR),
+    URI_TOO_LONG(HttpResponseStatus.REQUEST_URI_TOO_LONG),
+    HEADER_FIELDS_TOO_LARGE(HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE)
   }
 
   private companion object {
@@ -360,23 +373,34 @@ class ServerTest {
         credentials: Credentials?,
         responseStatus: HttpResponseStatus? = null
     ) {
-      when {
-        responseStatus != null ->
-            assertEquals(
-                responseStatus.code(),
-                OkRequest.Builder()
-                    .url("$baseUrl$TARGET_PATH")
-                    .build()
-                    .let(::newCall)
-                    .execute()
-                    .code)
-        else -> {
-          assertEquals(TARGET_DATA, get("$baseUrl$TARGET_PATH", credentials))
+      if (responseStatus == null) {
+        assertEquals(TARGET_DATA, get("$baseUrl$TARGET_PATH", credentials))
+        assertEquals(
+            if (interceptors.isEmpty()) TARGET_DATA else INTERCEPTED_DATA,
+            post("$baseUrl$TARGET_PATH", TARGET_DATA, credentials))
+      } else
           assertEquals(
-              if (interceptors.isEmpty()) TARGET_DATA else INTERCEPTED_DATA,
-              post("$baseUrl$TARGET_PATH", TARGET_DATA, credentials))
-        }
-      }
+              responseStatus.code(),
+              OkRequest.Builder()
+                  .url(
+                      "$baseUrl${
+                        if (responseStatus == HttpResponseStatus.REQUEST_URI_TOO_LONG)
+                          "/${newRandomString(Server.MAX_URI_SIZE + 1)}"
+                        else TARGET_PATH}")
+                  .run {
+                    if (responseStatus == HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE)
+                        header(
+                            "${HttpHeaderNames.PROXY_AUTHORIZATION}",
+                            "Basic ${newRandomString(Server.MAX_HEADER_SIZE + 1)}")
+                    else this
+                  }
+                  .build()
+                  .let(::newCall)
+                  .execute()
+                  .code)
     }
+
+    fun newRandomString(size: Int): String =
+        with('a'..'z') { (1..size).map { random() } }.joinToString("")
   }
 }

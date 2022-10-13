@@ -16,4 +16,4 @@ limitations under the License.
 package io.github.cfraser.proxi
 
 /** The [Credentials] for HTTP basic authorization. */
-data class Credentials(val username: String, val password: String)
+data class Credentials(@JvmField val username: String, @JvmField val password: String)

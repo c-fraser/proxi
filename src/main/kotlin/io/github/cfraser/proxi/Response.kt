@@ -28,4 +28,7 @@ class Response(
     @JvmField var statusCode: Int,
     @JvmField var headers: Map<String, String>,
     @JvmField var body: ByteArray?
-)
+) {
+
+  override fun toString() = "$statusCode $request"
+}

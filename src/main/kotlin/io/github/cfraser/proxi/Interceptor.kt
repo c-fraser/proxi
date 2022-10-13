@@ -19,7 +19,7 @@ package io.github.cfraser.proxi
  * [Interceptor] intercepts a proxy request and the corresponding response. The interception of
  * mutable [Request] and [Response] enables the dynamic transformation of proxied data.
  *
- * An [Interceptor] may intercept requests and responses concurrently. If the [Interceptor]
+ * An [Interceptor] instance may intercept requests and responses concurrently. If the [Interceptor]
  * implementation is not stateless, then synchronization is required.
  */
 @JvmDefaultWithCompatibility

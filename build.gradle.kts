@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "1.0.2"
+  version = "1.0.3"
 }
 
 java {
@@ -102,8 +102,7 @@ configure<SpotlessExtension> {
       See the License for the specific language governing permissions and
       limitations under the License.
       */
-      """
-          .trimIndent()
+      """.trimIndent()
 
   kotlin {
     ktfmt(ktfmtVersion)
@@ -231,6 +230,7 @@ tasks {
   withType<Test> {
     dependsOn(spotlessApply)
     useJUnitPlatform()
+    systemProperties("io.netty.leakDetection.level" to "PARANOID")
     testLogging {
       showExceptions = true
       showStandardStreams = true
