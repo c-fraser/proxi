@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "1.0.3"
+  version = "1.0.4"
 }
 
 java {
@@ -69,6 +69,7 @@ dependencies {
   testImplementation(kotlin("test"))
   testImplementation(libs.junit.jupiter)
   testImplementation(libs.okhttp.mockwebserver)
+  testImplementation(libs.okhttp.tls)
   testImplementation(libs.javalin)
   testImplementation(libs.ktor.certificates)
   testImplementation(libs.slf4j.nop)
