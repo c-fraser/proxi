@@ -15,24 +15,29 @@ limitations under the License.
 */
 package io.github.cfraser.proxi
 
+import com.google.common.jimfs.Configuration
+import com.google.common.jimfs.Jimfs
 import io.github.cfraser.proxi.ServerTest.ErrorInterceptor.Intercept
 import io.javalin.Javalin
-import io.ktor.network.tls.certificates.generateCertificate
 import io.netty.handler.codec.http.HttpHeaderNames
 import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory
+import java.io.IOException
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ProxySelector
 import java.nio.file.Path
-import java.nio.file.Paths
 import java.security.KeyStore
 import java.security.cert.CertificateFactory
+import java.util.UUID
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManager
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
+import kotlin.io.path.createDirectory
 import kotlin.io.path.inputStream
+import kotlin.io.path.writeText
 import kotlin.test.assertEquals
 import kotlin.test.fail
 import okhttp3.Credentials as OkCredentials
@@ -41,17 +46,13 @@ import okhttp3.Request as OkRequest
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response as OkResponse
 import okhttp3.ResponseBody
+import okhttp3.tls.HeldCertificate
 import org.eclipse.jetty.server.Server as JettyServer
 import org.eclipse.jetty.server.ServerConnector
 import org.eclipse.jetty.util.ssl.SslContextFactory
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
-/*
-The HTTPS tests require the (proxy) server certificate and key to be present (in the `resources`
-directory). The artifacts can be generated via the following `openssl` commands.
-
-openssl genrsa -out cert.key 2048 && openssl req -new -x509 -key cert.key -out cert.pem
-*/
 class ServerTest {
 
   @Test
@@ -86,17 +87,17 @@ class ServerTest {
 
   @Test
   fun `failed to execute HTTP proxy request`() {
-    verifyServer(error = ProxyError.REQUEST_FAILURE)
+    verifyServer(error = ProxyError.PROXIER_ERROR)
   }
 
   @Test
   fun `failed to intercept HTTP proxy request`() {
-    verifyServer(ErrorInterceptor(Intercept.REQUEST), error = ProxyError.INTERCEPT_FAILURE)
+    verifyServer(ErrorInterceptor(Intercept.REQUEST), error = ProxyError.INTERCEPT_ERROR)
   }
 
   @Test
   fun `failed to intercept HTTP proxy response`() {
-    verifyServer(ErrorInterceptor(Intercept.RESPONSE), error = ProxyError.INTERCEPT_FAILURE)
+    verifyServer(ErrorInterceptor(Intercept.RESPONSE), error = ProxyError.INTERCEPT_ERROR)
   }
 
   @Test
@@ -134,19 +135,19 @@ class ServerTest {
 
   @Test
   fun `failed to execute HTTPS proxy request`() {
-    verifyServer(secure = true, error = ProxyError.REQUEST_FAILURE)
+    verifyServer(secure = true, error = ProxyError.PROXIER_ERROR)
   }
 
   @Test
   fun `failed to intercept HTTPS proxy request`() {
     verifyServer(
-        ErrorInterceptor(Intercept.REQUEST), secure = true, error = ProxyError.INTERCEPT_FAILURE)
+        ErrorInterceptor(Intercept.REQUEST), secure = true, error = ProxyError.INTERCEPT_ERROR)
   }
 
   @Test
   fun `failed to intercept HTTPS proxy response`() {
     verifyServer(
-        ErrorInterceptor(Intercept.RESPONSE), secure = true, error = ProxyError.INTERCEPT_FAILURE)
+        ErrorInterceptor(Intercept.RESPONSE), secure = true, error = ProxyError.INTERCEPT_ERROR)
   }
 
   @Test
@@ -159,9 +160,16 @@ class ServerTest {
     verifyServer(error = ProxyError.HEADER_FIELDS_TOO_LARGE)
   }
 
+  @Test
+  fun `unable to proxy HTTPS request without hostname`() {
+    val exception =
+        assertThrows<IOException> { verifyServer(secure = true, error = ProxyError.INVALID_HOST) }
+    assertEquals("Unexpected response code for CONNECT: 400", exception.message)
+  }
+
   private object RequestInterceptor : Interceptor {
 
-    override fun interceptable(request: Request) = request.method == "POST"
+    override fun test(request: Request) = request.method == "POST"
 
     override fun intercept(request: Request) {
       request.body = INTERCEPTED_DATA.toByteArray()
@@ -170,7 +178,7 @@ class ServerTest {
 
   private object ResponseInterceptor : Interceptor {
 
-    override fun interceptable(request: Request) = request.method == "POST"
+    override fun test(request: Request) = request.method == "POST"
 
     override fun intercept(response: Response) {
       response.body = INTERCEPTED_DATA.toByteArray()
@@ -179,7 +187,7 @@ class ServerTest {
 
   private object FailInterceptor : Interceptor {
 
-    override fun interceptable(request: Request) = request.method == "POST"
+    override fun test(request: Request) = request.method == "POST"
 
     override fun intercept(request: Request) =
         fail("${FailInterceptor::class.simpleName} intercepted request")
@@ -208,10 +216,11 @@ class ServerTest {
 
   private enum class ProxyError(val responseStatus: HttpResponseStatus) {
     UNAUTHORIZED(HttpResponseStatus.UNAUTHORIZED),
-    REQUEST_FAILURE(HttpResponseStatus.BAD_GATEWAY),
-    INTERCEPT_FAILURE(HttpResponseStatus.INTERNAL_SERVER_ERROR),
+    PROXIER_ERROR(HttpResponseStatus.INTERNAL_SERVER_ERROR),
+    INTERCEPT_ERROR(HttpResponseStatus.INTERNAL_SERVER_ERROR),
     URI_TOO_LONG(HttpResponseStatus.REQUEST_URI_TOO_LONG),
-    HEADER_FIELDS_TOO_LARGE(HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE)
+    HEADER_FIELDS_TOO_LARGE(HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE),
+    INVALID_HOST(HttpResponseStatus.BAD_REQUEST)
   }
 
   internal companion object {
@@ -223,11 +232,24 @@ class ServerTest {
     private const val USERNAME = "test-user"
     private const val PASSWORD = "p@\$sW0rD"
 
-    val PROXY_CERTIFICATE =
-        checkNotNull(getResource("cert.pem")) { "Failed to get proxy certificate" }
-    val PROXY_PRIVATE_KEY =
-        checkNotNull(getResource("cert.key")) { "Failed to get proxy private key" }
-    private val CLIENT_TRUSTSTORE = newTruststore(PROXY_CERTIFICATE)
+    private val FILE_SYSTEM = Jimfs.newFileSystem(Configuration.unix())
+    fun String.inFile(file: String): Path =
+        FILE_SYSTEM.getPath("/${UUID.randomUUID()}")
+            .createDirectory()
+            .run { resolve(file) }
+            .also { it.writeText(this) }
+
+    val LOCALHOST_CERTIFICATE
+      get() =
+          HeldCertificate.Builder()
+              .addSubjectAlternativeName(InetAddress.getByName("localhost").canonicalHostName)
+              .rsa2048()
+              .build()
+    private val PROXY_CERTIFICATE =
+        HeldCertificate.Builder().certificateAuthority(0).rsa2048().build()
+    val PROXY_CERTIFICATE_PATH = PROXY_CERTIFICATE.certificatePem().inFile("proxy.pem")
+    val PROXY_PRIVATE_KEY_PATH = PROXY_CERTIFICATE.privateKeyPkcs8Pem().inFile("proxy.key")
+    private val CLIENT_TRUSTSTORE = newTruststore(PROXY_CERTIFICATE_PATH)
     val PROXY_CLIENT_TRUST_MANGER = newX509TrustManager(CLIENT_TRUSTSTORE)
     val PROXY_CLIENT_SOCKET_FACTORY: SSLSocketFactory =
         newSSLContext(PROXY_CLIENT_TRUST_MANGER).socketFactory
@@ -238,31 +260,35 @@ class ServerTest {
         credentials: Credentials? = null,
         error: ProxyError? = null
     ) {
-      webServer(secure = secure) { baseUrl ->
-        val proxier =
-            error
-                ?.takeIf { it == ProxyError.REQUEST_FAILURE }
-                ?.let { Proxier { error("Failed to proxy request") } }
-        val (server, client) =
-            if (secure)
-                Server.create(
-                    *interceptors,
-                    proxier = proxier
-                            ?: Proxier.create(
-                                newClient(
-                                    proxy = null, sslSocketFactory = insecureSSLSocketFactory())),
-                    certificatePath = PROXY_CERTIFICATE,
-                    privateKeyPath = PROXY_PRIVATE_KEY,
-                    credentials = credentials) to
-                    newClient(
-                        sslSocketFactory = PROXY_CLIENT_SOCKET_FACTORY to PROXY_CLIENT_TRUST_MANGER)
-            else
-                Server.create(*interceptors, proxier = proxier, credentials = credentials) to
-                    newClient()
-        server.start(PORT).use {
-          client.proxyRequests(baseUrl, interceptors, credentials, error?.responseStatus)
-        }
-      }
+      webServer(
+          secure = secure,
+          host = if (error == ProxyError.INVALID_HOST) "127.0.0.1" else "localhost") { baseUrl ->
+            val proxier =
+                error
+                    ?.takeIf { it == ProxyError.PROXIER_ERROR }
+                    ?.let { Proxier { error("Failed to proxy request") } }
+            val (server, client) =
+                if (secure)
+                    Server.create(
+                        *interceptors,
+                        proxier = proxier
+                                ?: Proxier.create(
+                                    newClient(
+                                        proxy = null,
+                                        sslSocketFactory = insecureSSLSocketFactory())),
+                        certificatePath = PROXY_CERTIFICATE_PATH,
+                        privateKeyPath = PROXY_PRIVATE_KEY_PATH,
+                        credentials = credentials) to
+                        newClient(
+                            sslSocketFactory =
+                                PROXY_CLIENT_SOCKET_FACTORY to PROXY_CLIENT_TRUST_MANGER)
+                else
+                    Server.create(*interceptors, proxier = proxier, credentials = credentials) to
+                        newClient()
+            server.start(PORT).use {
+              client.proxyRequests(baseUrl, interceptors, credentials, error?.responseStatus)
+            }
+          }
     }
 
     private fun newSSLContext(vararg trustManagers: TrustManager): SSLContext =
@@ -284,7 +310,7 @@ class ServerTest {
             .apply { init(truststore) }
             .trustManagers
             .firstOrNull() as? X509TrustManager
-            ?: error("Failed to initialize X509 trust manager")
+            ?: fail("Failed to initialize X509 trust manager")
 
     private fun insecureSSLSocketFactory(): Pair<SSLSocketFactory, X509TrustManager> =
         newSSLContext(*InsecureTrustManagerFactory.INSTANCE.trustManagers).socketFactory to
@@ -292,8 +318,17 @@ class ServerTest {
                 as? X509TrustManager
                 ?: fail("Failed to initialize X.509 trust manager"))
 
-    private fun getResource(name: String): Path? =
-        ServerTest::class.java.classLoader.getResource(name)?.toURI()?.let(Paths::get)
+    private fun newKeystore(heldCertificate: HeldCertificate): KeyStore =
+        KeyStore.getInstance(KeyStore.getDefaultType()).apply {
+          load(null, null)
+          val alias = ServerTest::class.simpleName?.lowercase()
+          setCertificateEntry("$alias${"cert"}", heldCertificate.certificate)
+          setKeyEntry(
+              "$alias${"key"}",
+              heldCertificate.keyPair.private,
+              PASSWORD.toCharArray(),
+              arrayOf(heldCertificate.certificate))
+        }
 
     private fun newClient(
         proxy: Int? = PORT,
@@ -309,18 +344,18 @@ class ServerTest {
             }
             .build()
 
-    private fun webServer(secure: Boolean = false, block: (String) -> Unit) {
+    private fun webServer(
+        secure: Boolean = false,
+        host: String = "localhost",
+        block: (String) -> Unit
+    ) {
       Javalin.create {
             if (secure)
                 it.jetty.server {
                   JettyServer().apply {
                     val sslContextFactory =
                         SslContextFactory.Server().apply {
-                          keyStore =
-                              generateCertificate(
-                                  keyAlias = USERNAME,
-                                  keyPassword = PASSWORD,
-                                  jksPassword = PASSWORD)
+                          keyStore = newKeystore(LOCALHOST_CERTIFICATE)
                           keyStorePassword = PASSWORD
                           isTrustAll = true
                         }
@@ -333,7 +368,7 @@ class ServerTest {
           .get(TARGET_PATH) { it.result(TARGET_DATA) }
           .post(TARGET_PATH) { it.result(it.body()) }
           .start(0)
-          .use { block("http${"s".takeIf { secure }.orEmpty()}://localhost:${it.port()}") }
+          .use { block("http${"s".takeIf { secure }.orEmpty()}://$host:${it.port()}") }
     }
 
     private fun OkHttpClient.get(url: String, credentials: Credentials?): String =

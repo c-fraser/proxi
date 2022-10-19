@@ -21,10 +21,10 @@ import kotlinx.knit.test.captureOutput
 import kotlinx.knit.test.verifyOutputLines
 import org.junit.jupiter.api.Test
 
-class Example02Test {
+class Example03Test {
   @Test
-  fun testExample02() {
-  captureOutput("Example02") { io.github.cfraser.proxi.knit.runExample02() }.verifyOutputLines(
+  fun testExample03() {
+  captureOutput("Example03") { io.github.cfraser.proxi.knit.runExample03() }.verifyOutputLines(
       "true"
   )
   }

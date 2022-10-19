@@ -22,7 +22,6 @@ import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufUtil
 import io.netty.buffer.Unpooled
 import io.netty.channel.Channel
-import io.netty.channel.ChannelHandler
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.ChannelInitializer
@@ -34,6 +33,7 @@ import io.netty.handler.codec.http.DefaultFullHttpResponse
 import io.netty.handler.codec.http.DefaultHttpHeaders
 import io.netty.handler.codec.http.EmptyHttpHeaders
 import io.netty.handler.codec.http.FullHttpRequest
+import io.netty.handler.codec.http.FullHttpResponse
 import io.netty.handler.codec.http.HttpHeaderNames
 import io.netty.handler.codec.http.HttpMethod
 import io.netty.handler.codec.http.HttpObjectAggregator
@@ -44,16 +44,17 @@ import io.netty.handler.codec.http.HttpServerCodec
 import io.netty.handler.codec.http.HttpVersion
 import io.netty.handler.codec.http.TooLongHttpHeaderException
 import io.netty.handler.codec.http.TooLongHttpLineException
-import io.netty.handler.logging.LoggingHandler
+import io.netty.handler.ssl.SslContext
 import io.netty.handler.ssl.SslContextBuilder
+import io.netty.util.NetUtil
 import io.netty.util.ReferenceCountUtil
-import io.netty.util.internal.logging.InternalLoggerFactory
-import io.netty.util.internal.logging.Slf4JLoggerFactory
 import java.io.Closeable
 import java.math.BigInteger
+import java.net.MalformedURLException
 import java.net.URL
 import java.nio.file.Path
-import java.security.Provider
+import java.security.PrivateKey
+import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.Security
 import java.security.cert.X509Certificate
@@ -77,6 +78,7 @@ import org.bouncycastle.asn1.x509.Extension
 import org.bouncycastle.asn1.x509.GeneralName
 import org.bouncycastle.asn1.x509.GeneralNames
 import org.bouncycastle.asn1.x509.KeyPurposeId
+import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
 import org.bouncycastle.cert.X509CertificateHolder
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
@@ -91,95 +93,8 @@ import org.slf4j.LoggerFactory
 /**
  * [Server] is an intercepting HTTP(S) proxy which enables received [Request] and [Response] data to
  * be transformed dynamically.
- *
- * @property handler the [ChannelHandler] which handles the interception and proxying of HTTP data
  */
-class Server private constructor(private val handler: ChannelHandler) : Closeable {
-
-  companion object {
-
-    /**
-     * Create a proxy [Server] instance.
-     *
-     * The [interceptors] are used to dynamically transform intercepted [Request] and [Response]
-     * data. When a [Request] is received by the proxy [Server] it is *permanently* associated with
-     * an [Interceptor] by finding the **first**, respective to the given order, that is
-     * [Interceptor.interceptable]. If the [Request] is not [Interceptor.interceptable], then a
-     * default *no-op* is used.
-     *
-     * For the proxy [Server] to support *HTTPS CONNECT* requests, the [certificatePath] and
-     * [privateKeyPath] must be provided. This enables the server to decrypt the proxied requests
-     * and responses for interception, assuming the client appropriately trusts the certificate at
-     * the given [certificatePath].
-     *
-     * @param interceptors the [Array] of [Interceptor] to use to intercept proxy requests and
-     * responses. The first [Interceptor.interceptable] interceptor is used for each proxy request
-     * @param proxier the [Proxier] to use to execute proxy requests
-     * @param executor the [Executor] to use to asynchronously intercept requests and responses
-     * @param certificatePath the [Path] to the X.509 *trusted certificate*
-     * @param privateKeyPath the [Path] to the PKCS8 private key for the *trusted certificate*
-     * @param credentials the [Credentials] required in the [HttpHeaderNames.PROXY_AUTHORIZATION]
-     * @return the proxy [Server]
-     * @throws RuntimeException if the proxy server failed to initialize
-     */
-    @JvmStatic
-    @JvmOverloads
-    fun create(
-        vararg interceptors: Interceptor,
-        proxier: Proxier? = null,
-        executor: Executor? = null,
-        certificatePath: Path? = null,
-        privateKeyPath: Path? = null,
-        credentials: Credentials? = null
-    ): Server {
-      fun Path.parse(): Any =
-          PEMParser(bufferedReader(Charsets.US_ASCII)).use(PEMParser::readObject)
-      val certificate =
-          certificatePath?.parse()?.let {
-            when (it) {
-              is X509CertificateHolder -> it
-              else -> error("Failed to parse certificate")
-            }
-          }
-      val privateKey =
-          privateKeyPath?.parse()?.let {
-            when (it) {
-              is PrivateKeyInfo -> it
-              is PEMKeyPair -> it.privateKeyInfo
-              else -> error("Failed to parse private key")
-            }
-          }
-      return Server(
-          Handler(
-              interceptors.toList(),
-              proxier ?: Proxier.create(),
-              executor
-                  ?: Executors.newFixedThreadPool(
-                      max(Runtime.getRuntime().availableProcessors(), 64)),
-              certificate,
-              privateKey,
-              credentials))
-    }
-
-    init {
-      InternalLoggerFactory.setDefaultFactory(Slf4JLoggerFactory.INSTANCE)
-    }
-
-    /** The [Logger] for the [Server]. */
-    private val LOGGER: Logger = LoggerFactory.getLogger(Server::class.java)
-
-    internal const val MAX_URI_SIZE = HttpObjectDecoder.DEFAULT_MAX_INITIAL_LINE_LENGTH
-    internal const val MAX_HEADER_SIZE = HttpObjectDecoder.DEFAULT_MAX_HEADER_SIZE
-
-    /** Get a [HttpServerCodec] instance. */
-    private val HTTP_SERVER_CODEC: HttpServerCodec
-      get() =
-          HttpServerCodec(MAX_URI_SIZE, MAX_HEADER_SIZE, HttpObjectDecoder.DEFAULT_MAX_CHUNK_SIZE)
-
-    /** Get a [HttpObjectAggregator] instance. */
-    private val HTTP_OBJECT_AGGREGATOR: HttpObjectAggregator
-      get() = HttpObjectAggregator(/* 8 MiB */ 8 * 1024 * 1024)
-  }
+class Server private constructor(private val initializer: ChannelInitializer<Channel>) : Closeable {
 
   private val started = AtomicBoolean()
   private val stopped = AtomicBoolean()
@@ -202,8 +117,7 @@ class Server private constructor(private val handler: ChannelHandler) : Closeabl
         ServerBootstrap()
             .group(acceptorGroup, workerGroup)
             .channel(NioServerSocketChannel::class.java)
-            .handler(LoggingHandler())
-            .childHandler(Initializer())
+            .childHandler(initializer)
             .bind(port)
             .syncUninterruptibly()
             .run { if (isSuccess) channel() else throw cause() }
@@ -236,24 +150,127 @@ class Server private constructor(private val handler: ChannelHandler) : Closeabl
     stop()
   }
 
+  companion object {
+
+    /**
+     * Create a proxy [Server] instance.
+     *
+     * The [interceptors] are used to dynamically transform intercepted [Request] and [Response]
+     * data. When a [Request] is received by the proxy [Server] it is *permanently* associated with
+     * an [Interceptor] by finding the **first**, respective to the given order, that matches the
+     * [java.util.function.Predicate] of [Request]. If the [Request] is not *interceptable*, then a
+     * default *no-op* [Interceptor] is used.
+     *
+     * For the proxy [Server] to support *HTTPS CONNECT* requests, the [certificatePath] and
+     * [privateKeyPath] must be provided. This enables the server to decrypt the proxied requests
+     * and responses for interception, assuming the client correctly trusts the certificate at the
+     * given [certificatePath].
+     *
+     * @param interceptors the [Array] of [Interceptor] to use to intercept proxy requests and
+     * responses. The first [Interceptor] that passes the [Interceptor.test] is used for each proxy
+     * request
+     * @param proxier the [Proxier] to use to execute proxy requests
+     * @param executor the [Executor] to use to asynchronously execute proxy requests. The
+     * asynchronous execution also includes interception of the proxy request and response.
+     * @param certificatePath the [Path] to the X.509 *trusted certificate authority*
+     * @param privateKeyPath the [Path] to the PKCS8 private key for the *trusted certificate*
+     * @param credentials the [Credentials] required in the [HttpHeaderNames.PROXY_AUTHORIZATION]
+     * @return the proxy [Server]
+     * @throws RuntimeException if the proxy server failed to initialize
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun create(
+        vararg interceptors: Interceptor,
+        proxier: Proxier? = null,
+        executor: Executor? = null,
+        certificatePath: Path? = null,
+        privateKeyPath: Path? = null,
+        credentials: Credentials? = null,
+    ): Server =
+        Server(
+            Initializer(
+                interceptors.toList(),
+                proxier ?: Proxier.create(),
+                executor
+                    ?: Executors.newFixedThreadPool(
+                        max(Runtime.getRuntime().availableProcessors(), 64)),
+                certificatePath?.readX509Certificate(),
+                privateKeyPath?.readPrivateKey(),
+                credentials))
+
+    private val LOGGER: Logger = LoggerFactory.getLogger(Server::class.java)
+
+    /** Read the X.509 certificate at the [Path]. */
+    private fun Path.readX509Certificate(): X509CertificateHolder =
+        when (val parsed = parse()) {
+          is X509CertificateHolder -> parsed
+          else -> error("Failed to parse certificate")
+        }
+
+    /** Read the PKCS8 private key at the [Path]. */
+    private fun Path.readPrivateKey(): PrivateKeyInfo =
+        when (val parsed = parse()) {
+          is PrivateKeyInfo -> parsed
+          is PEMKeyPair -> parsed.privateKeyInfo
+          else -> error("Failed to parse private key")
+        }
+
+    /** Parse the certificate at the [Path] with a [PEMParser]. */
+    private fun Path.parse(): Any =
+        PEMParser(bufferedReader(Charsets.US_ASCII)).use(PEMParser::readObject)
+
+    internal const val MAX_URI_SIZE = HttpObjectDecoder.DEFAULT_MAX_INITIAL_LINE_LENGTH
+    internal const val MAX_HEADER_SIZE = HttpObjectDecoder.DEFAULT_MAX_HEADER_SIZE
+  }
+
   /**
-   * [Initializer] initializes the [Channel] with the [HttpServerCodec], [HttpObjectAggregator], and
-   * [handler]
+   * [Initializer] is a [ChannelInitializer] which initializes the [Channel] with the
+   * [HttpServerCodec], [HttpObjectAggregator], and [Handler].
    */
-  inner class Initializer : ChannelInitializer<Channel>() {
+  private class Initializer(
+      private val interceptors: List<Interceptor>,
+      private val proxier: Proxier,
+      private val executor: Executor,
+      certificate: X509CertificateHolder?,
+      privateKey: PrivateKeyInfo?,
+      private val credentials: Credentials?,
+  ) : ChannelInitializer<Channel>() {
+
+    /** The [Certificates] shared by the initialized [Handler] instances. */
+    private val certificates =
+        certificate?.let { privateKey?.let { Certificates(certificate, privateKey) } }
 
     override fun initChannel(ch: Channel) {
-      ch.pipeline().addFirst(HTTP_SERVER_CODEC, HTTP_OBJECT_AGGREGATOR, handler)
+      ch.pipeline()
+          .addFirst(
+              HTTP_SERVER_CODEC,
+              HTTP_OBJECT_AGGREGATOR,
+              Handler(interceptors, proxier, executor, certificates, credentials))
+    }
+
+    companion object {
+
+      /** Get a [HttpServerCodec] instance. */
+      val HTTP_SERVER_CODEC: HttpServerCodec
+        get() =
+            HttpServerCodec(MAX_URI_SIZE, MAX_HEADER_SIZE, HttpObjectDecoder.DEFAULT_MAX_CHUNK_SIZE)
+
+      /** Get a [HttpObjectAggregator] instance. */
+      val HTTP_OBJECT_AGGREGATOR: HttpObjectAggregator
+        get() = HttpObjectAggregator(/* 8 MiB */ 8 * 1024 * 1024)
     }
   }
 
-  /** [Handler] handles received proxy requests. */
+  /**
+   * [Handler] in a [ChannelInboundHandlerAdapter] which handles the proxying of received
+   * [HttpRequest] data.
+   */
   private class Handler(
       private val interceptors: List<Interceptor>,
       private val proxier: Proxier,
       private val executor: Executor,
-      private val certificate: X509CertificateHolder?,
-      private val privateKey: PrivateKeyInfo?,
+      private val certificates: Certificates?,
       private val credentials: Credentials?,
   ) : ChannelInboundHandlerAdapter() {
 
@@ -261,178 +278,323 @@ class Server private constructor(private val handler: ChannelHandler) : Closeabl
     private data class Destination(val host: String, val port: Int)
     private var destination: Destination? = null
 
-    /**
-     * The [LoadingCache] that stores a generated [X509Certificate] for a *secure* proxy connection
-     * to a host.
-     */
-    private val certificates by
-        lazy<LoadingCache<String, X509Certificate>>(LazyThreadSafetyMode.NONE) {
-          Caffeine.newBuilder()
-              .maximumSize(64)
-              .evictionListener<String, X509Certificate> { host, _, cause ->
-                LOGGER.debug("Evicting certificate for {} ({})", host, cause)
-              }
-              .build(::generateCertificate)
-        }
-
     override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
-      LOGGER.debug("Reading message {}", msg::class.java.simpleName)
       when (msg) {
         is HttpRequest ->
-            msg.takeIf { it.decoded(ctx) }
-                ?.runCatching { if (method() == HttpMethod.CONNECT) connect(ctx) else handle(ctx) }
-                ?.onFailure {
-                  LOGGER.error("Failed to proxy HTTP(S) request", it)
-                  ctx.channel().close()
+            try {
+              msg.checkDecoded()
+              when {
+                msg.method() == HttpMethod.CONNECT -> {
+                  destination = msg.parseDestination()
+                  ctx.connect()
                 }
+                msg is FullHttpRequest -> {
+                  msg.checkAuthorized()
+                  val request = msg.toRequest()
+                  executor.execute {
+                    try {
+                      ctx.writeResponse(request.proxy(request.findInterceptor()))
+                    } catch (throwable: Throwable) {
+                      LOGGER.error("Failed to proxy request", throwable)
+                      ctx.writeStatus(HttpResponseStatus.INTERNAL_SERVER_ERROR, throwable.message)
+                    }
+                  }
+                }
+                else -> throw UnexpectedHttpRequestType(msg)
+              }
+            } catch (error: Error) {
+              LOGGER.error("Unable proxy request", error)
+              ctx.handleError(error)
+            } finally {
+              ReferenceCountUtil.release(msg)
+            }
         is ByteBuf ->
-            msg.runCatching { initializeTLS(ctx) }
-                .onFailure {
-                  LOGGER.error("Failed to initialize TLS connection", it)
-                  ctx.channel().close()
-                }
+            try {
+              val sslCtx = msg.initializeSslContext()
+              ctx.connectHttps(sslCtx, msg)
+            } catch (error: Error) {
+              LOGGER.error("Unable to initialize HTTPS connection", error)
+              ReferenceCountUtil.release(msg)
+              ctx.handleError(error)
+            }
       }
     }
 
     /**
-     * Check the if [HttpRequest] failed to be decoded. If so, stop processing the request and
-     * respond with relevant error code.
+     * Parse the [Destination] from the [HttpRequest.uri].
+     *
+     * @throws HttpsUnsupported if the server was created without a certificate and private key
+     * @throws InvalidUri if the [HttpRequest.uri] is not a `host:port`
+     * @throws InvalidHost if the parsed host is an IP(v4) address (instead of a hostname)
+     * @throws InvalidPort if the parsed port is not an [Int]
      */
-    private fun HttpRequest.decoded(ctx: ChannelHandlerContext): Boolean =
-        decoderResult()
-            .takeIf { it.isFailure }
-            ?.cause()
-            ?.takeIf { it is DecoderException }
-            ?.also {
-              LOGGER.error("Failed to decode HTTP request", it)
-              ctx.writeStatus(
-                  when (it) {
-                    is TooLongHttpLineException -> HttpResponseStatus.REQUEST_URI_TOO_LONG
-                    is TooLongHttpHeaderException ->
-                        HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE
-                    else -> HttpResponseStatus.BAD_REQUEST
-                  })
-              ReferenceCountUtil.release(this)
-            } == null
-
-    /** Handle the **CONNECT** [HttpRequest]. */
-    private fun HttpRequest.connect(ctx: ChannelHandlerContext) {
-      check(certificate != null && privateKey != null) {
-        "Certificate and private key required for HTTPS"
-      }
+    private fun HttpRequest.parseDestination(): Destination {
+      if (certificates == null) throw HttpsUnsupported
       val (host, port) =
-          checkNotNull(uri().split(':', limit = 2).takeIf { it.size == 2 }) {
-            "Unexpected URI ${uri()}"
-          }
-      destination = Destination(host, checkNotNull(port.toIntOrNull()) { "Invalid port $port" })
-      LOGGER.debug("Proxying requests to {}", destination)
-      ctx.writeStatus(HttpResponseStatus.OK)
-      ctx.channel().pipeline().remove(HttpServerCodec::class.java)
-      ctx.channel().pipeline().remove(HttpObjectAggregator::class.java)
-      ReferenceCountUtil.release(this)
+          uri().split(':', limit = 2).takeIf { it.size == 2 } ?: throw InvalidUri(uri())
+      return Destination(
+              host.takeUnless { NetUtil.isValidIpV4Address(it) } ?: throw InvalidHost(host),
+              port.toIntOrNull() ?: throw InvalidPort(port))
+          .also { LOGGER.debug("Proxying request to {}", it) }
     }
-
-    /** Handle the proxying of the [HttpRequest]. */
-    private fun HttpRequest.handle(ctx: ChannelHandlerContext) {
-      check(this is FullHttpRequest) { "Unexpected HTTP request" }
-      val destination = destination?.run { "https://$host:$port${uri()}" } ?: uri()
-      if (!isAuthorized()) {
-        LOGGER.debug("Unauthorized proxy request to {}", destination)
-        ctx.writeStatus(HttpResponseStatus.UNAUTHORIZED)
-        ReferenceCountUtil.release(this)
-        return
-      }
-      val request =
-          Request(
-              URL(destination),
-              method().name(),
-              headers().associate { (key, value) -> key to value },
-              ByteBufUtil.getBytes(content()))
-      ReferenceCountUtil.release(this)
-      executor.execute proxy@{
-        val interceptor = interceptors.find { it.interceptable(request) } ?: NoOpInterceptor
-        LOGGER.debug("Proxying request {} with interceptor {}", request, interceptor)
-        request
-            .runCatching { also(interceptor::intercept) }
-            .onFailure {
-              LOGGER.error("Failed to intercept request", it)
-              ctx.writeStatus(HttpResponseStatus.INTERNAL_SERVER_ERROR)
-              return@proxy
-            }
-            .mapCatching(proxier::execute)
-            .onFailure {
-              LOGGER.error("Failed to execute proxy request", it)
-              ctx.writeStatus(HttpResponseStatus.BAD_GATEWAY)
-              return@proxy
-            }
-            .mapCatching { it.also(interceptor::intercept) }
-            .onFailure {
-              LOGGER.error("Failed to intercept response", it)
-              ctx.writeStatus(HttpResponseStatus.INTERNAL_SERVER_ERROR)
-              return@proxy
-            }
-            .onSuccess {
-              LOGGER.debug("Writing proxy response {}", it)
-              ctx.writeAndFlush(
-                  DefaultFullHttpResponse(
-                      HttpVersion.HTTP_1_1,
-                      HttpResponseStatus.valueOf(it.statusCode),
-                      it.body?.let(Unpooled::copiedBuffer) ?: Unpooled.EMPTY_BUFFER,
-                      DefaultHttpHeaders().apply {
-                        it.headers.forEach(::add)
-                        it.body?.apply { set(HttpHeaderNames.CONTENT_LENGTH, size) }
-                      },
-                      EmptyHttpHeaders.INSTANCE))
-            }
-      }
-    }
-
-    /** A no-op [Interceptor] which is used if the [Request] is not [Interceptor.interceptable]. */
-    private object NoOpInterceptor : Interceptor
 
     /**
      * Check if the [HttpRequest] contains the [HttpHeaderNames.PROXY_AUTHORIZATION] header matching
      * the [credentials].
+     *
+     * @throws Unauthorized if the [HttpRequest] does not contain the proxy [credentials]
      */
-    private fun HttpRequest.isAuthorized(): Boolean =
-        credentials == null ||
-            credentials ==
-                headers()[HttpHeaderNames.PROXY_AUTHORIZATION]
-                    ?.takeIf { it.startsWith("Basic ") }
-                    ?.removePrefix("Basic ")
-                    ?.let { Base64.getDecoder().decode(it).decodeToString() }
-                    ?.split(':', limit = 2)
-                    ?.let { (username, password) -> Credentials(username, password) }
-
-    /** Handle the initialization of the TLS connection. */
-    private fun ByteBuf.initializeTLS(ctx: ChannelHandlerContext) {
-      check(getByte(0) == TLS_HANDSHAKE) { "Unexpected data" }
-      val destination = checkNotNull(destination?.host) { "Unknown destination" }
-      LOGGER.debug("Initializing TLS connection to proxy requests to {}", destination)
-      val certificate = certificates[destination]
-      val sslContext =
-          SslContextBuilder.forServer(PEM_CONVERTER.getPrivateKey(privateKey), certificate).build()
-      ctx.pipeline()
-          .addFirst(sslContext.newHandler(ctx.alloc()), HTTP_SERVER_CODEC, HTTP_OBJECT_AGGREGATOR)
-      ctx.pipeline().fireChannelRead(this)
+    private fun HttpRequest.checkAuthorized() {
+      if (credentials == null) return
+      if (credentials !=
+          headers()[HttpHeaderNames.PROXY_AUTHORIZATION]
+              ?.takeIf { it.startsWith("Basic ") }
+              ?.removePrefix("Basic ")
+              ?.let { Base64.getDecoder().decode(it).decodeToString() }
+              ?.split(':', limit = 2)
+              ?.let { (username, password) -> Credentials(username, password) })
+          throw Unauthorized
     }
 
     /**
-     * Generate a [X509Certificate] for the proxy request with the [certificate], [privateKey], and
-     * [host].
+     * Convert the [FullHttpRequest] to a proxy [Request].
+     *
+     * @throws InvalidRequestUrl if the destination URL is malformed
      */
-    private fun generateCertificate(host: String): X509Certificate {
+    private fun FullHttpRequest.toRequest(): Request {
+      val destination = destination?.run { "https://$host:$port${uri()}" } ?: uri()
+      val url =
+          try {
+            URL(destination)
+          } catch (_: MalformedURLException) {
+            throw InvalidRequestUrl(destination)
+          }
+      return Request(
+          url,
+          method().name(),
+          headers().associate { (key, value) -> key to value },
+          ByteBufUtil.getBytes(content()))
+    }
+
+    /**
+     * Find the first [Interceptor] that passes the [Interceptor.test] for the [Request].
+     *
+     * The [NoOpInterceptor] is returned if none of the [interceptors] may intercept the [Request].
+     *
+     * @throws [Throwable] if any [Interceptor.test] throws an exception
+     */
+    private fun Request.findInterceptor(): Interceptor =
+        runCatching { interceptors.find { it.test(this) } }
+            .map { it ?: NoOpInterceptor }
+            .onSuccess { LOGGER.debug("Proxying request {} with {}", this, it) }
+            .getOrThrow()
+
+    /**
+     * Proxy the [Request] and use the [interceptor] to [Interceptor.intercept] the data.
+     *
+     * @throws Throwable if the [Interceptor.intercept] throws an exception, or if the [Proxier]
+     * throws an exception
+     */
+    private fun Request.proxy(interceptor: Interceptor): Response =
+        runCatching { also(interceptor::intercept) }
+            .mapCatching(proxier::execute)
+            .mapCatching { it.also(interceptor::intercept) }
+            .onSuccess { LOGGER.debug("Writing proxy response {}", it) }
+            .getOrThrow()
+
+    /**
+     * Initialize a [SslContext] for the [destination], using the [certificates], from the [ByteBuf]
+     * which is expected to be a [TLS_HANDSHAKE] 'client hello' message.
+     *
+     * @throws ExpectedTLSHandshake if the first [Byte] in the [ByteBuf] is not [TLS_HANDSHAKE]
+     * @throws HttpsUnsupported if the server was created without a certificate and private key
+     * @throws UnknownDestination if the [destination] is `null`
+     * @throws CertificateGenerationFailure if the certificate chain could not be generated
+     */
+    private fun ByteBuf.initializeSslContext(): SslContext {
+      if (getByte(0) != TLS_HANDSHAKE) throw ExpectedTLSHandshake
+      if (certificates == null) throw HttpsUnsupported
+      val destination = destination?.host ?: throw UnknownDestination
+      val certificateChain =
+          certificates
+              .runCatching { this[destination] }
+              .getOrElse { throw CertificateGenerationFailure(it) }
+      return SslContextBuilder.forServer(certificates.privateKey, *certificateChain).build()
+    }
+
+    /** The errors that can occur while proxying a request within the [Handler.channelRead]. */
+    private sealed class Error(message: String, cause: Throwable? = null) :
+        RuntimeException(message, cause)
+    private class DecodeFailure(cause: DecoderException) :
+        Error("Failed to decode HTTP request", cause)
+    private object HttpsUnsupported : Error("Certificate and private key required for HTTPS")
+    private class InvalidUri(uri: String) : Error("Invalid URI $uri")
+    private class InvalidHost(host: String) : Error("Invalid host $host")
+    private class InvalidPort(port: String) : Error("Invalid port $port")
+    private class InvalidRequestUrl(destination: String) : Error("Invalid url $destination")
+    private class UnexpectedHttpRequestType(request: HttpRequest) :
+        Error("Unexpected HTTP request type ${request::class.simpleName}")
+    private object Unauthorized : Error("Unauthorized proxy request")
+    private object ExpectedTLSHandshake : Error("Expected TLS 'client hello' message")
+    private object UnknownDestination : Error("Unknown destination")
+    private class CertificateGenerationFailure(cause: Throwable) :
+        Error("Failed to generate certificate", cause)
+
+    /**
+     * A no-op [Interceptor] which is used if the [Request] does not match any [Interceptor]
+     * predicate.
+     */
+    private object NoOpInterceptor : Interceptor
+
+    private companion object {
+
+      val LOGGER: Logger = LoggerFactory.getLogger(Handler::class.java)
+
+      /**
+       * [TLS_HANDSHAKE] is the first [Byte] of the initial TLS handshake message (client hello).
+       */
+      const val TLS_HANDSHAKE: Byte = 22
+
+      /**
+       * Check the if the [HttpRequest] was decoded successfully.
+       *
+       * @throws DecodeFailure if the [HttpRequest] was not decoded successfully
+       */
+      fun HttpRequest.checkDecoded() {
+        decoderResult()
+            .takeIf { it.isFailure }
+            ?.cause()
+            ?.let { it as? DecoderException }
+            ?.also { throw DecodeFailure(it) }
+      }
+
+      /**
+       * Write a [FullHttpResponse] with the [status] and [content] using the
+       * [ChannelHandlerContext].
+       */
+      fun ChannelHandlerContext.writeStatus(status: HttpResponseStatus, content: String? = null) {
+        writeAndFlush(
+            DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1,
+                status,
+                Unpooled.copiedBuffer(content.orEmpty(), Charsets.UTF_8)))
+      }
+
+      /** Write the [response] as a [FullHttpResponse] using the [ChannelHandlerContext]. */
+      fun ChannelHandlerContext.writeResponse(response: Response) {
+        writeAndFlush(
+            DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1,
+                HttpResponseStatus.valueOf(response.statusCode),
+                response.body?.let(Unpooled::copiedBuffer) ?: Unpooled.EMPTY_BUFFER,
+                DefaultHttpHeaders().apply {
+                  response.headers.forEach(::add)
+                  response.body?.apply { set(HttpHeaderNames.CONTENT_LENGTH, size) }
+                },
+                EmptyHttpHeaders.INSTANCE))
+      }
+
+      /**
+       * Write the response to the [HttpMethod.CONNECT] request and prepare the [Channel.pipeline]
+       * for the TLS 'client hello' message.
+       */
+      fun ChannelHandlerContext.connect() {
+        writeStatus(HttpResponseStatus.OK)
+        channel().pipeline().remove(HttpServerCodec::class.java)
+        channel().pipeline().remove(HttpObjectAggregator::class.java)
+      }
+
+      /**
+       * Establish an HTTPS connection with [context] by adding the [SslContext.newHandler],
+       * [Initializer.HTTP_SERVER_CODEC], and [Initializer.HTTP_OBJECT_AGGREGATOR] to the
+       * [Channel.pipeline].
+       */
+      fun ChannelHandlerContext.connectHttps(context: SslContext, msg: ByteBuf) {
+        pipeline()
+            .addFirst(
+                context.newHandler(alloc()),
+                Initializer.HTTP_SERVER_CODEC,
+                Initializer.HTTP_OBJECT_AGGREGATOR)
+        pipeline().fireChannelRead(msg)
+      }
+
+      /**
+       * Handle the [error].
+       *
+       * Write a [FullHttpResponse] with an appropriate [HttpResponseStatus] and [Error.message], or
+       * [Channel.close] the [ChannelHandlerContext.channel].
+       */
+      fun ChannelHandlerContext.handleError(error: Error) {
+        when (error) {
+          is DecodeFailure ->
+              when (error.cause) {
+                is TooLongHttpLineException -> HttpResponseStatus.REQUEST_URI_TOO_LONG
+                is TooLongHttpHeaderException -> HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE
+                else -> HttpResponseStatus.BAD_REQUEST
+              }
+          is InvalidUri,
+          is InvalidHost,
+          is InvalidPort -> HttpResponseStatus.BAD_REQUEST
+          is InvalidRequestUrl,
+          is UnexpectedHttpRequestType -> HttpResponseStatus.UNPROCESSABLE_ENTITY
+          Unauthorized -> HttpResponseStatus.UNAUTHORIZED
+          HttpsUnsupported,
+          ExpectedTLSHandshake,
+          UnknownDestination,
+          is CertificateGenerationFailure -> null
+        }?.also { status ->
+          writeAndFlush(
+              DefaultFullHttpResponse(
+                  HttpVersion.HTTP_1_1,
+                  status,
+                  Unpooled.copiedBuffer(error.message, Charsets.UTF_8)))
+        }
+            ?: channel().close()
+      }
+    }
+  }
+
+  /**
+   * [Certificates] generates and caches a certificate chain which is used to build the SSL context
+   * for a proxy connection.
+   */
+  private class Certificates(certificateHolder: X509CertificateHolder, keyInfo: PrivateKeyInfo) {
+
+    private val subject = certificateHolder.subject
+    private val publicKey = certificateHolder.subjectPublicKeyInfo.toPublicKey()
+    private val certificate = certificateHolder.toX509Certificate()
+
+    val privateKey = keyInfo.toPrivateKey()
+
+    /**
+     * The [LoadingCache] that stores a generated certificate chain for a *secure* proxy connection
+     * to a host.
+     */
+    private val cache: LoadingCache<String, Array<X509Certificate>> =
+        Caffeine.newBuilder()
+            .maximumSize(64)
+            .evictionListener<String, Array<X509Certificate>> { host, _, cause ->
+              LOGGER.debug("Evicting generated certificate for {} ({}) from cache", host, cause)
+            }
+            .build(this::generate)
+
+    /** Get the certificate chain, for the [host], from the [cache]. */
+    operator fun get(host: String): Array<X509Certificate> = cache[host]
+
+    /**
+     * Generate a certificate chain for the [host] using the [subject], [publicKey], and
+     * [privateKey] of the [certificate].
+     */
+    private fun generate(host: String): Array<X509Certificate> {
       LOGGER.debug("Generating certificate for {}", host)
-      val publicKey = PEM_CONVERTER.getPublicKey(certificate?.subjectPublicKeyInfo)
-      val privateKey = PEM_CONVERTER.getPrivateKey(privateKey)
       val certificateBuilder =
           JcaX509v3CertificateBuilder(
-                  certificate?.subject,
+                  subject,
                   BigInteger(64, SecureRandom()),
                   Date.from(Instant.now().atZone(ZoneId.systemDefault()).minusDays(1).toInstant()),
                   Date.from(
                       Year.now()
-                          .plus(3, ChronoUnit.YEARS)
+                          .plus(1, ChronoUnit.YEARS)
                           .atDay(1)
                           .atStartOfDay(ZoneId.systemDefault())
                           .toInstant()),
@@ -445,29 +607,41 @@ class Server private constructor(private val handler: ChannelHandler) : Closeabl
               .addExtension(
                   Extension.extendedKeyUsage, true, ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth))
       val signer = JcaContentSignerBuilder("SHA256WithRSAEncryption").build(privateKey)
-      val certificateConverter = JcaX509CertificateConverter().setProvider(BOUNCY_CASTLE_PROVIDER)
-      return certificateConverter.getCertificate(certificateBuilder.build(signer))
+      return arrayOf(certificateBuilder.build(signer).toX509Certificate(), certificate)
     }
 
-    private companion object {
+    @Suppress("NOTHING_TO_INLINE")
+    companion object {
 
-      /**
-       * [TLS_HANDSHAKE] is the first [Byte] of the initial TLS handshake message (client hello).
-       */
-      const val TLS_HANDSHAKE: Byte = 22
+      val LOGGER: Logger = LoggerFactory.getLogger(Certificates::class.java)
 
       /** The [BouncyCastleProvider] to use to generate certificates. */
-      private val BOUNCY_CASTLE_PROVIDER by
-          lazy<Provider> { BouncyCastleProvider().also { Security.addProvider(it) } }
-
-      /** The [JcaPEMKeyConverter] to use to extract keys from certificates. */
-      private val PEM_CONVERTER by
-          lazy<JcaPEMKeyConverter> { JcaPEMKeyConverter().setProvider(BOUNCY_CASTLE_PROVIDER) }
-
-      /** Write and flush an HTTP response with the [status] using the [ChannelHandlerContext]. */
-      fun ChannelHandlerContext.writeStatus(status: HttpResponseStatus) {
-        writeAndFlush(DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status))
+      private val BOUNCY_CASTLE_PROVIDER by lazy {
+        BouncyCastleProvider().also { Security.addProvider(it) }
       }
+
+      /** The [JcaPEMKeyConverter] to use to convert public and private keys. */
+      private val KEY_CONVERTER by lazy { JcaPEMKeyConverter().setProvider(BOUNCY_CASTLE_PROVIDER) }
+
+      /** The [JcaX509CertificateConverter] to use to convert X.509 certificates. */
+      private val CERTIFICATE_CONVERTER by lazy {
+        JcaX509CertificateConverter().setProvider(BOUNCY_CASTLE_PROVIDER)
+      }
+
+      /** Convert the [SubjectPublicKeyInfo] to a [PublicKey] using the [KEY_CONVERTER]. */
+      private inline fun SubjectPublicKeyInfo.toPublicKey(): PublicKey =
+          KEY_CONVERTER.getPublicKey(this)
+
+      /** Convert the [PrivateKeyInfo] to a [PrivateKey] using the [KEY_CONVERTER]. */
+      private inline fun PrivateKeyInfo.toPrivateKey(): PrivateKey =
+          KEY_CONVERTER.getPrivateKey(this)
+
+      /**
+       * Convert the [X509CertificateHolder] to a [X509Certificate] using the
+       * [CERTIFICATE_CONVERTER].
+       */
+      private inline fun X509CertificateHolder.toX509Certificate(): X509Certificate =
+          CERTIFICATE_CONVERTER.getCertificate(this)
     }
   }
 }

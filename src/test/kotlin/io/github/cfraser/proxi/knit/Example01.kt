@@ -48,12 +48,12 @@ MockWebServer().use { target ->
     // Initialize an HTTP client that uses the proxy server.
     val client =
       OkHttpClient.Builder().proxySelector(ProxySelector.of(InetSocketAddress(8787))).build()
-    // The HTTP request to the target, which will be proxied by server.
-    val request = Request.Builder().url(target.url("/hello")).build()
-    // Execute the request then print the response.
-    client.newCall(request).execute().use { response ->
-      response.body?.use(ResponseBody::string)?.also { println("Received: $it") }
-    }
+    // Execute the request then print the response body. 
+    client
+      .newCall(Request.Builder().url(target.url("/hello")).build())
+      .execute()
+      .use { response -> response.body?.use(ResponseBody::string) }
+      ?.also { println("Received: $it") }
   }
 }
 }

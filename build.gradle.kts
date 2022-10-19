@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "1.0.4"
+  version = "1.1.0"
 }
 
 java {
@@ -58,12 +58,12 @@ repositories { mavenCentral() }
 
 dependencies {
   api(libs.okhttp)
-  compileOnly(libs.slf4j.api)
   implementation(libs.netty.buffer)
   implementation(libs.netty.codec.http)
   implementation(libs.netty.handler)
-  implementation(libs.caffeine.cache)
   implementation(libs.bouncy.castle)
+  implementation(libs.caffeine.cache)
+  implementation(libs.slf4j.api)
   runtimeOnly(libs.netty.tcnative)
 
   testImplementation(kotlin("test"))
@@ -71,7 +71,7 @@ dependencies {
   testImplementation(libs.okhttp.mockwebserver)
   testImplementation(libs.okhttp.tls)
   testImplementation(libs.javalin)
-  testImplementation(libs.ktor.certificates)
+  testImplementation(libs.jimfs)
   testImplementation(libs.slf4j.nop)
   testImplementation(libs.knit.test)
 }
@@ -190,7 +190,7 @@ configure<JReleaserExtension> {
     authors.set(listOf("c-fraser"))
     license.set("Apache-2.0")
     extraProperties.put("inceptionYear", "2022")
-    description.set("Javalin proxy plugin")
+    description.set("Intercepting HTTP(S) proxy server")
     links { homepage.set("https://github.com/c-fraser/${rootProject.name}") }
   }
 
@@ -231,7 +231,7 @@ tasks {
   withType<Test> {
     dependsOn(spotlessApply)
     useJUnitPlatform()
-    systemProperties("io.netty.leakDetection.level" to "PARANOID")
+    systemProperties("io.netty.leakDetection.level" to "PARANOID" /*, "javax.net.debug" to "all"*/)
     testLogging {
       showExceptions = true
       showStandardStreams = true
@@ -240,14 +240,13 @@ tasks {
     }
   }
 
-  val detekt =
-      withType<Detekt> {
-        enabled = false
-        jvmTarget = "${JavaVersion.VERSION_11}"
-        buildUponDefaultConfig = true
-        config.setFrom(rootDir.resolve("detekt.yml"))
-        source = kotlinSourceFiles
-      }
+  withType<Detekt> {
+    enabled = false
+    jvmTarget = "${JavaVersion.VERSION_11}"
+    buildUponDefaultConfig = true
+    config.setFrom(rootDir.resolve("detekt.yml"))
+    source = kotlinSourceFiles
+  }
 
-  spotlessApply { dependsOn(detekt) }
+  spotlessApply { dependsOn(detektMain, detektTest) }
 }
