@@ -22,6 +22,7 @@ import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufUtil
 import io.netty.buffer.Unpooled
 import io.netty.channel.Channel
+import io.netty.channel.ChannelFutureListener
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.ChannelInitializer
@@ -48,6 +49,7 @@ import io.netty.handler.ssl.SslContext
 import io.netty.handler.ssl.SslContextBuilder
 import io.netty.util.NetUtil
 import io.netty.util.ReferenceCountUtil
+import io.netty.util.concurrent.Future
 import java.io.Closeable
 import java.math.BigInteger
 import java.net.MalformedURLException
@@ -58,6 +60,7 @@ import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.Security
 import java.security.cert.X509Certificate
+import java.security.interfaces.ECPublicKey
 import java.time.Instant
 import java.time.Year
 import java.time.ZoneId
@@ -161,7 +164,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      * [java.util.function.Predicate] of [Request]. If the [Request] is not *interceptable*, then a
      * default *no-op* [Interceptor] is used.
      *
-     * For the proxy [Server] to support *HTTPS CONNECT* requests, the [certificatePath] and
+     * For the proxy [Server] to support proxying *HTTPS* requests, the [certificatePath] and
      * [privateKeyPath] must be provided. This enables the server to decrypt the proxied requests
      * and responses for interception, assuming the client correctly trusts the certificate at the
      * given [certificatePath].
@@ -291,19 +294,24 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
                 msg is FullHttpRequest -> {
                   msg.checkAuthorized()
                   val request = msg.toRequest()
+                  val close = msg.closeConnection()
                   executor.execute {
                     try {
-                      ctx.writeResponse(request.proxy(request.findInterceptor()))
-                    } catch (throwable: Throwable) {
-                      LOGGER.error("Failed to proxy request", throwable)
-                      ctx.writeStatus(HttpResponseStatus.INTERNAL_SERVER_ERROR, throwable.message)
-                    }
+                          val interceptor = request.findInterceptor()
+                          val response = request.proxy(interceptor)
+                          ctx.writeResponse(response)
+                        } catch (throwable: Throwable) {
+                          LOGGER.error("Failed to proxy request", throwable)
+                          ctx.writeStatus(
+                              HttpResponseStatus.INTERNAL_SERVER_ERROR, throwable.message)
+                        }
+                        .apply { if (close) addListener(ChannelFutureListener.CLOSE) }
                   }
                 }
                 else -> throw UnexpectedHttpRequestType(msg)
               }
             } catch (error: Error) {
-              LOGGER.error("Unable proxy request", error)
+              LOGGER.error("Unable to proxy request", error)
               ctx.handleError(error)
             } finally {
               ReferenceCountUtil.release(msg)
@@ -359,20 +367,21 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     /**
      * Convert the [FullHttpRequest] to a proxy [Request].
      *
-     * @throws InvalidRequestUrl if the destination URL is malformed
+     * @throws InvalidDestination if the destination URL is malformed
      */
     private fun FullHttpRequest.toRequest(): Request {
       val destination = destination?.run { "https://$host:$port${uri()}" } ?: uri()
-      val url =
+      return Request(
           try {
             URL(destination)
           } catch (_: MalformedURLException) {
-            throw InvalidRequestUrl(destination)
-          }
-      return Request(
-          url,
+            throw InvalidDestination(destination)
+          },
           method().name(),
-          headers().associate { (key, value) -> key to value },
+          buildMap {
+            headers().associateTo(this) { (key, value) -> key to value }
+            remove("${HttpHeaderNames.PROXY_AUTHORIZATION}")
+          },
           ByteBufUtil.getBytes(content()))
     }
 
@@ -431,7 +440,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     private class InvalidUri(uri: String) : Error("Invalid URI $uri")
     private class InvalidHost(host: String) : Error("Invalid host $host")
     private class InvalidPort(port: String) : Error("Invalid port $port")
-    private class InvalidRequestUrl(destination: String) : Error("Invalid url $destination")
+    private class InvalidDestination(destination: String) : Error("Invalid URL $destination")
     private class UnexpectedHttpRequestType(request: HttpRequest) :
         Error("Unexpected HTTP request type ${request::class.simpleName}")
     private object Unauthorized : Error("Unauthorized proxy request")
@@ -468,31 +477,36 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
             ?.also { throw DecodeFailure(it) }
       }
 
+      /** Check if the [HttpRequest] requests for the connection to be closed. */
+      fun HttpRequest.closeConnection(): Boolean =
+          headers()[HttpHeaderNames.CONNECTION]?.trim()?.lowercase() == "close"
+
       /**
        * Write a [FullHttpResponse] with the [status] and [content] using the
        * [ChannelHandlerContext].
        */
-      fun ChannelHandlerContext.writeStatus(status: HttpResponseStatus, content: String? = null) {
-        writeAndFlush(
-            DefaultFullHttpResponse(
-                HttpVersion.HTTP_1_1,
-                status,
-                Unpooled.copiedBuffer(content.orEmpty(), Charsets.UTF_8)))
-      }
+      fun ChannelHandlerContext.writeStatus(
+          status: HttpResponseStatus,
+          content: String? = null
+      ): Future<Void> =
+          writeAndFlush(
+              DefaultFullHttpResponse(
+                  HttpVersion.HTTP_1_1,
+                  status,
+                  Unpooled.copiedBuffer(content.orEmpty(), Charsets.UTF_8)))
 
       /** Write the [response] as a [FullHttpResponse] using the [ChannelHandlerContext]. */
-      fun ChannelHandlerContext.writeResponse(response: Response) {
-        writeAndFlush(
-            DefaultFullHttpResponse(
-                HttpVersion.HTTP_1_1,
-                HttpResponseStatus.valueOf(response.statusCode),
-                response.body?.let(Unpooled::copiedBuffer) ?: Unpooled.EMPTY_BUFFER,
-                DefaultHttpHeaders().apply {
-                  response.headers.forEach(::add)
-                  response.body?.apply { set(HttpHeaderNames.CONTENT_LENGTH, size) }
-                },
-                EmptyHttpHeaders.INSTANCE))
-      }
+      fun ChannelHandlerContext.writeResponse(response: Response): Future<Void> =
+          writeAndFlush(
+              DefaultFullHttpResponse(
+                  HttpVersion.HTTP_1_1,
+                  HttpResponseStatus.valueOf(response.statusCode),
+                  response.body?.let(Unpooled::copiedBuffer) ?: Unpooled.EMPTY_BUFFER,
+                  DefaultHttpHeaders().apply {
+                    response.headers.forEach(::add)
+                    response.body?.apply { set(HttpHeaderNames.CONTENT_LENGTH, size) }
+                  },
+                  EmptyHttpHeaders.INSTANCE))
 
       /**
        * Write the response to the [HttpMethod.CONNECT] request and prepare the [Channel.pipeline]
@@ -521,35 +535,31 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
       /**
        * Handle the [error].
        *
-       * Write a [FullHttpResponse] with an appropriate [HttpResponseStatus] and [Error.message], or
-       * [Channel.close] the [ChannelHandlerContext.channel].
+       * Write a [FullHttpResponse] with an appropriate [HttpResponseStatus] and [Error.message]
+       * then [Channel.close] the [ChannelHandlerContext.channel].
        */
       fun ChannelHandlerContext.handleError(error: Error) {
-        when (error) {
-          is DecodeFailure ->
-              when (error.cause) {
-                is TooLongHttpLineException -> HttpResponseStatus.REQUEST_URI_TOO_LONG
-                is TooLongHttpHeaderException -> HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE
-                else -> HttpResponseStatus.BAD_REQUEST
-              }
-          is InvalidUri,
-          is InvalidHost,
-          is InvalidPort -> HttpResponseStatus.BAD_REQUEST
-          is InvalidRequestUrl,
-          is UnexpectedHttpRequestType -> HttpResponseStatus.UNPROCESSABLE_ENTITY
-          Unauthorized -> HttpResponseStatus.UNAUTHORIZED
-          HttpsUnsupported,
-          ExpectedTLSHandshake,
-          UnknownDestination,
-          is CertificateGenerationFailure -> null
-        }?.also { status ->
-          writeAndFlush(
-              DefaultFullHttpResponse(
-                  HttpVersion.HTTP_1_1,
-                  status,
-                  Unpooled.copiedBuffer(error.message, Charsets.UTF_8)))
-        }
-            ?: channel().close()
+        val status =
+            when (error) {
+              is DecodeFailure ->
+                  when (error.cause) {
+                    is TooLongHttpLineException -> HttpResponseStatus.REQUEST_URI_TOO_LONG
+                    is TooLongHttpHeaderException ->
+                        HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE
+                    else -> HttpResponseStatus.BAD_REQUEST
+                  }
+              is InvalidUri,
+              is InvalidHost,
+              is InvalidPort, -> HttpResponseStatus.BAD_REQUEST
+              is InvalidDestination,
+              is UnexpectedHttpRequestType, -> HttpResponseStatus.UNPROCESSABLE_ENTITY
+              Unauthorized -> HttpResponseStatus.UNAUTHORIZED
+              HttpsUnsupported,
+              ExpectedTLSHandshake,
+              UnknownDestination,
+              is CertificateGenerationFailure, -> HttpResponseStatus.NOT_IMPLEMENTED
+            }
+        writeStatus(status, error.message).addListener(ChannelFutureListener.CLOSE)
       }
     }
   }
@@ -563,6 +573,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     private val subject = certificateHolder.subject
     private val publicKey = certificateHolder.subjectPublicKeyInfo.toPublicKey()
     private val certificate = certificateHolder.toX509Certificate()
+    private val signatureAlgorithm = publicKey.signatureAlgorithm()
 
     val privateKey = keyInfo.toPrivateKey()
 
@@ -606,7 +617,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
                   GeneralNames.getInstance(DERSequence(GeneralName(GeneralName.dNSName, host))))
               .addExtension(
                   Extension.extendedKeyUsage, true, ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth))
-      val signer = JcaContentSignerBuilder("SHA256WithRSAEncryption").build(privateKey)
+      val signer = JcaContentSignerBuilder(signatureAlgorithm).build(privateKey)
       return arrayOf(certificateBuilder.build(signer).toX509Certificate(), certificate)
     }
 
@@ -627,6 +638,31 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
       private val CERTIFICATE_CONVERTER by lazy {
         JcaX509CertificateConverter().setProvider(BOUNCY_CASTLE_PROVIDER)
       }
+
+      /**
+       * Determine the signature algorithm, from the [PublicKey], to use to sign the generated
+       * certificate.
+       *
+       * @see org.bouncycastle.operator.DefaultSignatureAlgorithmIdentifierFinder
+       */
+      private inline fun PublicKey.signatureAlgorithm(): String =
+          checkNotNull(
+              when (algorithm) {
+                "ECDSA" ->
+                    (this as? ECPublicKey)?.run {
+                      when (params.curve.field.fieldSize) {
+                        224 -> "SHA224WITHECDSA"
+                        256 -> "SHA256WITHECDSA"
+                        384 -> "SHA384WITHECDSA"
+                        512 -> "SHA512WITHECDSA"
+                        else -> null
+                      }
+                    }
+                "RSA" -> "SHA256WITHRSAENCRYPTION"
+                else -> null
+              }) {
+                "Unsupported private key algorithm $algorithm"
+              }
 
       /** Convert the [SubjectPublicKeyInfo] to a [PublicKey] using the [KEY_CONVERTER]. */
       private inline fun SubjectPublicKeyInfo.toPublicKey(): PublicKey =

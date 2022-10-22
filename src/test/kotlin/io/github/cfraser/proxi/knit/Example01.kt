@@ -20,6 +20,7 @@ package io.github.cfraser.proxi.knit
 import io.github.cfraser.proxi.Interceptor
 import io.github.cfraser.proxi.Response
 import io.github.cfraser.proxi.Server
+import io.github.cfraser.proxi.ServerTest.Companion.PORT
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.ResponseBody
@@ -43,12 +44,12 @@ MockWebServer().use { target ->
       response.body = "Goodbye!".toByteArray()
     }
   }
-  // Create and start the proxy server.
-  Server.create(ResponseInterceptor()).start(8787).use {
+  // Create and start a proxy server.
+  Server.create(ResponseInterceptor()).start(PORT).use {
     // Initialize an HTTP client that uses the proxy server.
     val client =
-      OkHttpClient.Builder().proxySelector(ProxySelector.of(InetSocketAddress(8787))).build()
-    // Execute the request then print the response body. 
+      OkHttpClient.Builder().proxySelector(ProxySelector.of(InetSocketAddress(PORT))).build()
+    // Execute a request then print the (intercepted) response body. 
     client
       .newCall(Request.Builder().url(target.url("/hello")).build())
       .execute()

@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "1.1.0"
+  version = "1.2.0"
 }
 
 java {
@@ -74,6 +74,7 @@ dependencies {
   testImplementation(libs.jimfs)
   testImplementation(libs.slf4j.nop)
   testImplementation(libs.knit.test)
+  testImplementation(libs.zt.exec)
 }
 
 val kotlinSourceFiles by lazy {

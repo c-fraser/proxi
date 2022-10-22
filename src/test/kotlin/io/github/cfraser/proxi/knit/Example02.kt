@@ -18,7 +18,8 @@ limitations under the License.
 package io.github.cfraser.proxi.knit
 
 import io.github.cfraser.proxi.Server
-import io.github.cfraser.proxi.ServerTest.Companion.inFile
+import io.github.cfraser.proxi.ServerTest.Companion.PORT
+import io.github.cfraser.proxi.ServerTest.Companion.asFile
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -30,28 +31,28 @@ import java.net.ProxySelector
 fun runExample02() { 
 
 // Create a root certificate authority.
-val rootCertificate = HeldCertificate.Builder().certificateAuthority(1).rsa2048().build()
+val rootCertificate = HeldCertificate.Builder().certificateAuthority(1).build()
 // Create an intermediate certificate authority (signed by the root certificate).
 val intermediateCertificate =
-  HeldCertificate.Builder().certificateAuthority(0).signedBy(rootCertificate).rsa2048().build()
-// Ensure the client trusts the root certificate.
+  HeldCertificate.Builder().certificateAuthority(0).signedBy(rootCertificate).build()
+// Create a client certificates that trust the root certificate.
 val clientCertificates =
   HandshakeCertificates.Builder().addTrustedCertificate(rootCertificate.certificate).build()
-// Create and start the proxy server which uses the intermediate certificate authority to generate
+// Create and start a proxy server which uses the intermediate certificate authority to generate
 // trusted certificates for the (destination of) proxy requests.
 Server.create(
   // To proxy HTTPS requests the proxy server requires a CA certificate and private key.
-  // This is required because the client must trust the (generated) proxy server
-  // certificate to be able to decrypt and proxy the HTTPS request.
-  certificatePath = intermediateCertificate.certificatePem().inFile("proxy.pem"),
-  privateKeyPath = intermediateCertificate.privateKeyPkcs8Pem().inFile("proxy.key")
+  // The proxy client(s) must trust the provided CA certificate so the proxy server can generate a
+  // (trusted) certificate to establish a TLS connection (to access the proxy request).
+  certificatePath = intermediateCertificate.certificatePem().asFile("proxy.pem"),
+  privateKeyPath = intermediateCertificate.privateKeyPkcs8Pem().asFile("proxy.key")
 )
-  .start(8787)
+  .start(PORT)
   .use {
-    // Initialize an HTTPS client that uses the proxy server and trusts the root certificate.
+    // Initialize an HTTPS client that uses the proxy server and client certificates.
     val client =
       OkHttpClient.Builder()
-        .proxySelector(ProxySelector.of(InetSocketAddress(8787)))
+        .proxySelector(ProxySelector.of(InetSocketAddress(PORT)))
         .sslSocketFactory(
           clientCertificates.sslSocketFactory(), clientCertificates.trustManager
         )

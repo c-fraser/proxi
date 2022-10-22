@@ -27,6 +27,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ProxySelector
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.security.KeyStore
 import java.security.cert.CertificateFactory
 import java.util.UUID
@@ -50,10 +51,62 @@ import okhttp3.tls.HeldCertificate
 import org.eclipse.jetty.server.Server as JettyServer
 import org.eclipse.jetty.server.ServerConnector
 import org.eclipse.jetty.util.ssl.SslContextFactory
+import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.zeroturnaround.exec.ProcessExecutor
 
 class ServerTest {
+
+  /** [hey](https://github.com/rakyll/hey) must be installed to (successfully) run this test. */
+  @Disabled
+  @Test
+  fun `measure HTTP proxy server performance`() {
+    Server.create().start(PORT).use {
+      val command =
+          listOf(
+              "hey",
+              "-n",
+              "10000",
+              "-m",
+              "GET",
+              "-x",
+              "http://localhost:$PORT",
+              @Suppress("HttpUrlsUsage") "http://httpbin.org/get")
+      exec(command, readOutput = false)
+      exec(command)?.also(::println)
+    }
+  }
+
+  /**
+   * [hey](https://github.com/rakyll/hey) and [mkcert](https://github.com/FiloSottile/mkcert)
+   * (`mkcert -install`) must be installed to (successfully) run this test.
+   */
+  @Disabled
+  @Test
+  fun `measure HTTPS proxy server performance`() {
+    val rootCAPath =
+        exec(listOf("mkcert", "-CAROOT"))?.trim()?.let(Paths::get)
+            ?: fail("Failed to get (mkcert) root CA path")
+    val certificatePath = rootCAPath.resolve("rootCA.pem")
+    val privateKeyPath = rootCAPath.resolve("rootCA-key.pem")
+    Server.create(certificatePath = certificatePath, privateKeyPath = privateKeyPath)
+        .start(PORT)
+        .use {
+          val command =
+              listOf(
+                  "hey",
+                  "-n",
+                  "10000",
+                  "-m",
+                  "GET",
+                  "-x",
+                  "http://localhost:$PORT",
+                  "https://httpbin.org/get")
+          exec(command, readOutput = false)
+          exec(command)?.also(::println)
+        }
+  }
 
   @Test
   fun `proxy an HTTP request`() {
@@ -161,10 +214,32 @@ class ServerTest {
   }
 
   @Test
+  fun `unable to proxy HTTPS request`() {
+    val exception =
+        assertThrows<IOException> {
+          verifyServer(secure = true, error = ProxyError.HTTPS_UNSUPPORTED)
+        }
+    assertEquals("Unexpected response code for CONNECT: 501", exception.message)
+  }
+
+  @Test
   fun `unable to proxy HTTPS request without hostname`() {
     val exception =
         assertThrows<IOException> { verifyServer(secure = true, error = ProxyError.INVALID_HOST) }
     assertEquals("Unexpected response code for CONNECT: 400", exception.message)
+  }
+
+  @Test
+  fun `verify receiving HTTP request (invalid proxy request URL)`() {
+    webServer {
+      Server.create().start(PORT).use {
+        val response =
+            OkHttpClient()
+                .newCall(OkRequest.Builder().url("http://localhost:$PORT").build())
+                .execute()
+        assertEquals(response.code, 422)
+      }
+    }
   }
 
   private object RequestInterceptor : Interceptor {
@@ -214,18 +289,19 @@ class ServerTest {
     }
   }
 
-  private enum class ProxyError(val responseStatus: HttpResponseStatus) {
+  private enum class ProxyError(val responseStatus: HttpResponseStatus?) {
     UNAUTHORIZED(HttpResponseStatus.UNAUTHORIZED),
     PROXIER_ERROR(HttpResponseStatus.INTERNAL_SERVER_ERROR),
     INTERCEPT_ERROR(HttpResponseStatus.INTERNAL_SERVER_ERROR),
     URI_TOO_LONG(HttpResponseStatus.REQUEST_URI_TOO_LONG),
     HEADER_FIELDS_TOO_LARGE(HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE),
-    INVALID_HOST(HttpResponseStatus.BAD_REQUEST)
+    HTTPS_UNSUPPORTED(null),
+    INVALID_HOST(null)
   }
 
   internal companion object {
 
-    private const val PORT = 8787
+    const val PORT = 8787
     private const val TARGET_PATH = "/external"
     private const val TARGET_DATA = "external"
     private const val INTERCEPTED_DATA = "intercepted"
@@ -233,22 +309,18 @@ class ServerTest {
     private const val PASSWORD = "p@\$sW0rD"
 
     private val FILE_SYSTEM = Jimfs.newFileSystem(Configuration.unix())
-    fun String.inFile(file: String): Path =
+    fun String.asFile(file: String): Path =
         FILE_SYSTEM.getPath("/${UUID.randomUUID()}")
             .createDirectory()
             .run { resolve(file) }
             .also { it.writeText(this) }
 
-    val LOCALHOST_CERTIFICATE
-      get() =
-          HeldCertificate.Builder()
-              .addSubjectAlternativeName(InetAddress.getByName("localhost").canonicalHostName)
-              .rsa2048()
-              .build()
-    private val PROXY_CERTIFICATE =
-        HeldCertificate.Builder().certificateAuthority(0).rsa2048().build()
-    val PROXY_CERTIFICATE_PATH = PROXY_CERTIFICATE.certificatePem().inFile("proxy.pem")
-    val PROXY_PRIVATE_KEY_PATH = PROXY_CERTIFICATE.privateKeyPkcs8Pem().inFile("proxy.key")
+    val LOCALHOST = InetAddress.getByName("localhost").canonicalHostName
+    private val LOCALHOST_CERTIFICATE
+      get() = HeldCertificate.Builder().addSubjectAlternativeName(LOCALHOST).build()
+    private val PROXY_CERTIFICATE = HeldCertificate.Builder().certificateAuthority(0).build()
+    val PROXY_CERTIFICATE_PATH = PROXY_CERTIFICATE.certificatePem().asFile("proxy.pem")
+    val PROXY_PRIVATE_KEY_PATH = PROXY_CERTIFICATE.privateKeyPkcs8Pem().asFile("proxy.key")
     private val CLIENT_TRUSTSTORE = newTruststore(PROXY_CERTIFICATE_PATH)
     val PROXY_CLIENT_TRUST_MANGER = newX509TrustManager(CLIENT_TRUSTSTORE)
     val PROXY_CLIENT_SOCKET_FACTORY: SSLSocketFactory =
@@ -268,7 +340,7 @@ class ServerTest {
                     ?.takeIf { it == ProxyError.PROXIER_ERROR }
                     ?.let { Proxier { error("Failed to proxy request") } }
             val (server, client) =
-                if (secure)
+                if (secure && error != ProxyError.HTTPS_UNSUPPORTED)
                     Server.create(
                         *interceptors,
                         proxier = proxier
@@ -434,5 +506,13 @@ class ServerTest {
 
     private fun newRandomString(size: Int): String =
         with('a'..'z') { (1..size).map { random() } }.joinToString("")
+
+    private fun exec(command: Collection<String>, readOutput: Boolean = true): String? =
+        ProcessExecutor()
+            .command(command)
+            .readOutput(readOutput)
+            .execute()
+            .takeIf { readOutput }
+            ?.outputUTF8()
   }
 }

@@ -20,6 +20,8 @@ package io.github.cfraser.proxi.knit
 import io.github.cfraser.proxi.Proxier
 import io.github.cfraser.proxi.Server
 import io.github.cfraser.proxi.ServerTest
+import io.github.cfraser.proxi.ServerTest.Companion.LOCALHOST
+import io.github.cfraser.proxi.ServerTest.Companion.PORT
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -27,48 +29,58 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ProxySelector
 
 fun runExample03() { 
 
-// Create a (self-signed) certificate (and private key) for the (local) mock web server.
-val certificate = ServerTest.LOCALHOST_CERTIFICATE
-// Use the certificate for the TLS handshake between the client and mock web server.
-val serverCertificates = HandshakeCertificates.Builder().heldCertificate(certificate).build()
-// Ensure the client trusts the certificate used by the mock web server.
-val clientCertificates =
-  HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
-// Initialize a "secure" mock web server which is the target for proxy requests.
+// Create a root certificate for the client and server to trust.
+val rootCertificate = HeldCertificate.Builder().certificateAuthority(0).build()
+// Create a server certificate (signed by the root certificate) for the mock web server.
+val serverCertificate =
+  HandshakeCertificates.Builder()
+    .addTrustedCertificate(rootCertificate.certificate)
+    .heldCertificate(
+      HeldCertificate.Builder()
+        .addSubjectAlternativeName(LOCALHOST)
+        .signedBy(rootCertificate)
+        .build()
+    )
+    .build()
+// Create a client certificate (signed by the root certificate) for the client.
+val clientCertificate =
+  HandshakeCertificates.Builder()
+    .addTrustedCertificate(rootCertificate.certificate)
+    .heldCertificate(HeldCertificate.Builder().signedBy(rootCertificate).build())
+    .build()
+// Initialize an HTTPS mock web server which is the target for proxy requests.
 MockWebServer()
-  // Specify the mock web server certificates to use to serve HTTPS requests.
-  .apply { useHttps(serverCertificates.sslSocketFactory(), false) }
+  .apply { useHttps(serverCertificate.sslSocketFactory(), false) }
+  .apply { requestClientAuth() }
   .use { target ->
-    // Enqueue a mock response for the proxied request.
     target.enqueue(MockResponse())
     // Create a proxier that uses the client certificates.
     val proxier =
       Proxier.create(
         OkHttpClient.Builder()
           .sslSocketFactory(
-            clientCertificates.sslSocketFactory(), clientCertificates.trustManager
+            clientCertificate.sslSocketFactory(), clientCertificate.trustManager
           )
           .build()
       )
-    // Create and start the proxy server that can connect to the "secure" mock web server.
+    // Create and start the proxy server that can connect to the mock web server.
     Server.create(
       proxier = proxier,
-      // Provide the certificate and private key to proxy HTTPS requests.
+      // Provide a certificate and private key to proxy HTTPS requests.
       certificatePath = ServerTest.PROXY_CERTIFICATE_PATH,
       privateKeyPath = ServerTest.PROXY_PRIVATE_KEY_PATH
     )
-      .start(8787)
+      .start(PORT)
       .use {
         // Initialize an HTTPS client that uses the proxy server and trusts its certificate.
         val client =
           OkHttpClient.Builder()
-            .proxySelector(ProxySelector.of(InetSocketAddress(8787)))
+            .proxySelector(ProxySelector.of(InetSocketAddress(PORT)))
             .sslSocketFactory(
               ServerTest.PROXY_CLIENT_SOCKET_FACTORY,
               ServerTest.PROXY_CLIENT_TRUST_MANGER
