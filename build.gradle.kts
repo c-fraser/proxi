@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "1.2.0"
+  version = "1.2.1"
 }
 
 java {
