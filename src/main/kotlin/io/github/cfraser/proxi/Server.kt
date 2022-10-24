@@ -297,9 +297,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
                   val close = msg.closeConnection()
                   executor.execute {
                     try {
-                          val interceptor = request.findInterceptor()
-                          val response = request.proxy(interceptor)
-                          ctx.writeResponse(response)
+                          ctx.writeResponse(request.proxy())
                         } catch (throwable: Throwable) {
                           LOGGER.error("Failed to proxy request", throwable)
                           ctx.writeStatus(
@@ -386,30 +384,18 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     }
 
     /**
-     * Find the first [Interceptor] that passes the [Interceptor.test] for the [Request].
+     * Proxy the [Request] with the first [Interceptor] that passes the [Interceptor.test].
      *
-     * The [NoOpInterceptor] is returned if none of the [interceptors] may intercept the [Request].
+     * The [NoOpInterceptor] is used if none of the [interceptors] may intercept the [Request].
      *
-     * @throws [Throwable] if any [Interceptor.test] throws an exception
+     * @throws Throwable if [Interceptor.test], [Interceptor.intercept], or [Proxier.execute] throws
+     * an exception
      */
-    private fun Request.findInterceptor(): Interceptor =
-        runCatching { interceptors.find { it.test(this) } }
-            .map { it ?: NoOpInterceptor }
-            .onSuccess { LOGGER.debug("Proxying request {} with {}", this, it) }
-            .getOrThrow()
-
-    /**
-     * Proxy the [Request] and use the [interceptor] to [Interceptor.intercept] the data.
-     *
-     * @throws Throwable if the [Interceptor.intercept] throws an exception, or if the [Proxier]
-     * throws an exception
-     */
-    private fun Request.proxy(interceptor: Interceptor): Response =
-        runCatching { also(interceptor::intercept) }
-            .mapCatching(proxier::execute)
-            .mapCatching { it.also(interceptor::intercept) }
-            .onSuccess { LOGGER.debug("Writing proxy response {}", it) }
-            .getOrThrow()
+    private fun Request.proxy(): Response {
+      val interceptor = interceptors.find { it.test(this) } ?: NoOpInterceptor
+      LOGGER.debug("Proxying request {} with {}", this, interceptor)
+      return also(interceptor::intercept).let(proxier::execute).also(interceptor::intercept)
+    }
 
     /**
      * Initialize a [SslContext] for the [destination], using the [certificates], from the [ByteBuf]
@@ -425,9 +411,11 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
       if (certificates == null) throw HttpsUnsupported
       val destination = destination?.host ?: throw UnknownDestination
       val certificateChain =
-          certificates
-              .runCatching { this[destination] }
-              .getOrElse { throw CertificateGenerationFailure(it) }
+          try {
+            certificates[destination]
+          } catch (throwable: Throwable) {
+            throw CertificateGenerationFailure(throwable)
+          }
       return SslContextBuilder.forServer(certificates.privateKey, *certificateChain).build()
     }
 
@@ -488,25 +476,29 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
       fun ChannelHandlerContext.writeStatus(
           status: HttpResponseStatus,
           content: String? = null
-      ): Future<Void> =
-          writeAndFlush(
-              DefaultFullHttpResponse(
-                  HttpVersion.HTTP_1_1,
-                  status,
-                  Unpooled.copiedBuffer(content.orEmpty(), Charsets.UTF_8)))
+      ): Future<Void> {
+        LOGGER.debug("Writing {} response with {}", status, content)
+        return writeAndFlush(
+            DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1,
+                status,
+                Unpooled.copiedBuffer(content.orEmpty(), Charsets.UTF_8)))
+      }
 
       /** Write the [response] as a [FullHttpResponse] using the [ChannelHandlerContext]. */
-      fun ChannelHandlerContext.writeResponse(response: Response): Future<Void> =
-          writeAndFlush(
-              DefaultFullHttpResponse(
-                  HttpVersion.HTTP_1_1,
-                  HttpResponseStatus.valueOf(response.statusCode),
-                  response.body?.let(Unpooled::copiedBuffer) ?: Unpooled.EMPTY_BUFFER,
-                  DefaultHttpHeaders().apply {
-                    response.headers.forEach(::add)
-                    response.body?.apply { set(HttpHeaderNames.CONTENT_LENGTH, size) }
-                  },
-                  EmptyHttpHeaders.INSTANCE))
+      fun ChannelHandlerContext.writeResponse(response: Response): Future<Void> {
+        LOGGER.debug("Writing proxy response {}", response)
+        return writeAndFlush(
+            DefaultFullHttpResponse(
+                HttpVersion.HTTP_1_1,
+                HttpResponseStatus.valueOf(response.statusCode),
+                response.body?.let(Unpooled::copiedBuffer) ?: Unpooled.EMPTY_BUFFER,
+                DefaultHttpHeaders().apply {
+                  response.headers.forEach(::add)
+                  response.body?.apply { set(HttpHeaderNames.CONTENT_LENGTH, size) }
+                },
+                EmptyHttpHeaders.INSTANCE))
+      }
 
       /**
        * Write the response to the [HttpMethod.CONNECT] request and prepare the [Channel.pipeline]
