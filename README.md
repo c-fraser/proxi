@@ -60,11 +60,11 @@ HTTPS request is depicted below.
 
 <!--- INCLUDE
 import io.github.cfraser.proxi.Interceptor
+import io.github.cfraser.proxi.Request
 import io.github.cfraser.proxi.Response
 import io.github.cfraser.proxi.Server
 import io.github.cfraser.proxi.ServerTest.Companion.PORT
 import okhttp3.OkHttpClient
-import okhttp3.Request
 import okhttp3.ResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -83,6 +83,7 @@ MockWebServer().use { target ->
   target.enqueue(MockResponse().setBody("Hello!"))
   // Define a response interceptor to modify the proxy response.
   class ResponseInterceptor : Interceptor {
+    override fun test(t: Request) = true
     override fun intercept(response: Response) {
       // Print the response from the proxy request.
       response.body?.let(::String)?.also { println("Intercepted: $it") }
@@ -95,9 +96,9 @@ MockWebServer().use { target ->
     // Initialize an HTTP client that uses the proxy server.
     val client =
       OkHttpClient.Builder().proxySelector(ProxySelector.of(InetSocketAddress(PORT))).build()
-    // Execute a request then print the (intercepted) response body. 
+    // Execute a request then print the (intercepted) response body.
     client
-      .newCall(Request.Builder().url(target.url("/hello")).build())
+      .newCall(okhttp3.Request.Builder().url(target.url("/hello")).build())
       .execute()
       .use { response -> response.body?.use(ResponseBody::string) }
       ?.also { println("Received: $it") }
@@ -266,7 +267,7 @@ MockWebServer()
           .newCall(Request.Builder().url(target.url("/")).build())
           .execute()
           .use(Response::isSuccessful)
-          .let(::println)
+          .also(::println)
       }
   }
 ```

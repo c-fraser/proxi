@@ -15,22 +15,22 @@ limitations under the License.
 */
 package io.github.cfraser.proxi
 
-import java.net.URL
+import java.net.URI
 
 /**
  * [Request] is the HTTP request to be proxied.
  *
- * @property url the proxy request [URL]
+ * @property uri the proxy request [URI]
  * @property method the proxy request method
  * @property headers the proxy request headers
  * @property body the proxy request body
  */
 class Request(
-    @JvmField var url: URL,
+    @JvmField var uri: URI,
     @JvmField var method: String,
     @JvmField var headers: Map<String, String>,
     @JvmField var body: ByteArray?
 ) {
 
-  override fun toString() = "$method $url"
+  override fun toString() = "$method $uri"
 }

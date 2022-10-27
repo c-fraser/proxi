@@ -42,6 +42,7 @@ import io.netty.handler.codec.http.HttpObjectDecoder
 import io.netty.handler.codec.http.HttpRequest
 import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.handler.codec.http.HttpServerCodec
+import io.netty.handler.codec.http.HttpUtil
 import io.netty.handler.codec.http.HttpVersion
 import io.netty.handler.codec.http.TooLongHttpHeaderException
 import io.netty.handler.codec.http.TooLongHttpLineException
@@ -49,11 +50,10 @@ import io.netty.handler.ssl.SslContext
 import io.netty.handler.ssl.SslContextBuilder
 import io.netty.util.NetUtil
 import io.netty.util.ReferenceCountUtil
-import io.netty.util.concurrent.Future
 import java.io.Closeable
 import java.math.BigInteger
-import java.net.MalformedURLException
-import java.net.URL
+import java.net.URI
+import java.net.URISyntaxException
 import java.nio.file.Path
 import java.security.PrivateKey
 import java.security.PublicKey
@@ -67,12 +67,16 @@ import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.Base64
 import java.util.Date
-import java.util.concurrent.Executor
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.io.path.bufferedReader
 import kotlin.math.max
 import kotlin.properties.Delegates.notNull
+import kotlin.properties.Delegates.observable
 import org.bouncycastle.asn1.DERSequence
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
 import org.bouncycastle.asn1.x500.X500Name
@@ -173,7 +177,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      * responses. The first [Interceptor] that passes the [Interceptor.test] is used for each proxy
      * request
      * @param proxier the [Proxier] to use to execute proxy requests
-     * @param executor the [Executor] to use to asynchronously execute proxy requests. The
+     * @param executor the [ExecutorService] to use to asynchronously execute proxy requests. The
      * asynchronous execution also includes interception of the proxy request and response.
      * @param certificatePath the [Path] to the X.509 *trusted certificate authority*
      * @param privateKeyPath the [Path] to the PKCS8 private key for the *trusted certificate*
@@ -186,7 +190,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     fun create(
         vararg interceptors: Interceptor,
         proxier: Proxier? = null,
-        executor: Executor? = null,
+        executor: ExecutorService? = null,
         certificatePath: Path? = null,
         privateKeyPath: Path? = null,
         credentials: Credentials? = null,
@@ -234,7 +238,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
   private class Initializer(
       private val interceptors: List<Interceptor>,
       private val proxier: Proxier,
-      private val executor: Executor,
+      private val executor: ExecutorService,
       certificate: X509CertificateHolder?,
       privateKey: PrivateKeyInfo?,
       private val credentials: Credentials?,
@@ -272,14 +276,24 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
   private class Handler(
       private val interceptors: List<Interceptor>,
       private val proxier: Proxier,
-      private val executor: Executor,
+      private val executor: ExecutorService,
       private val certificates: Certificates?,
       private val credentials: Credentials?,
   ) : ChannelInboundHandlerAdapter() {
 
     /** The [host] and [port] of the proxy request [Destination]. */
     private data class Destination(val host: String, val port: Int)
-    private var destination: Destination? = null
+    private var destination by
+        observable<Destination?>(null) { _, _, destination ->
+          LOGGER.debug("Proxying requests to {}", destination)
+        }
+
+    /**
+     * The [Future] denoting the completion of the *current* proxy request processing.
+     *
+     * > The [future] is intended to prevent (proxy response) writes to a closed channel.
+     */
+    private var future: Future<*>? = null
 
     override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
       when (msg) {
@@ -293,20 +307,19 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
                 }
                 msg is FullHttpRequest -> {
                   msg.checkAuthorized()
-                  val request = msg.toRequest()
-                  val close = msg.closeConnection()
-                  executor.execute {
-                    try {
-                          ctx.writeResponse(request.proxy())
-                        } catch (throwable: Throwable) {
-                          LOGGER.error("Failed to proxy request", throwable)
-                          ctx.writeStatus(
-                              HttpResponseStatus.INTERNAL_SERVER_ERROR, throwable.message)
+                  val request = msg.asRequest()
+                  val keepAlive = HttpUtil.isKeepAlive(msg)
+                  future =
+                      executor.submit {
+                        try {
+                          ctx.writeResponse(request.proxy(), keepAlive)
+                        } catch (error: Error) {
+                          LOGGER.error("Failed to proxy request", error)
+                          ctx.handleError(error)
                         }
-                        .apply { if (close) addListener(ChannelFutureListener.CLOSE) }
-                  }
+                      }
                 }
-                else -> throw UnexpectedHttpRequestType(msg)
+                else -> throw UnexpectedType(msg)
               }
             } catch (error: Error) {
               LOGGER.error("Unable to proxy request", error)
@@ -316,7 +329,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
             }
         is ByteBuf ->
             try {
-              val sslCtx = msg.initializeSslContext()
+              val sslCtx = msg.initializeSSL()
               ctx.connectHttps(sslCtx, msg)
             } catch (error: Error) {
               LOGGER.error("Unable to initialize HTTPS connection", error)
@@ -324,6 +337,20 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
               ctx.handleError(error)
             }
       }
+    }
+
+    override fun channelUnregistered(ctx: ChannelHandlerContext?) {
+      try {
+        future?.get(1, TimeUnit.SECONDS)
+      } catch (_: ExecutionException) {
+        future?.cancel(true)
+      }
+      ctx?.channel()?.close()
+    }
+
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun exceptionCaught(ctx: ChannelHandlerContext?, cause: Throwable?) {
+      LOGGER.warn("Unhandled exception caught", cause)
     }
 
     /**
@@ -339,9 +366,8 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
       val (host, port) =
           uri().split(':', limit = 2).takeIf { it.size == 2 } ?: throw InvalidUri(uri())
       return Destination(
-              host.takeUnless { NetUtil.isValidIpV4Address(it) } ?: throw InvalidHost(host),
-              port.toIntOrNull() ?: throw InvalidPort(port))
-          .also { LOGGER.debug("Proxying request to {}", it) }
+          host.takeUnless { NetUtil.isValidIpV4Address(it) } ?: throw InvalidHost(host),
+          port.toIntOrNull() ?: throw InvalidPort(port))
     }
 
     /**
@@ -351,14 +377,14 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      * @throws Unauthorized if the [HttpRequest] does not contain the proxy [credentials]
      */
     private fun HttpRequest.checkAuthorized() {
-      if (credentials == null) return
-      if (credentials !=
-          headers()[HttpHeaderNames.PROXY_AUTHORIZATION]
-              ?.takeIf { it.startsWith("Basic ") }
-              ?.removePrefix("Basic ")
-              ?.let { Base64.getDecoder().decode(it).decodeToString() }
-              ?.split(':', limit = 2)
-              ?.let { (username, password) -> Credentials(username, password) })
+      if (credentials != null &&
+          credentials !=
+              headers()[HttpHeaderNames.PROXY_AUTHORIZATION]
+                  ?.takeIf { it.startsWith("Basic ") }
+                  ?.removePrefix("Basic ")
+                  ?.let { Base64.getDecoder().decode(it).decodeToString() }
+                  ?.split(':', limit = 2)
+                  ?.let { (username, password) -> Credentials(username, password) })
           throw Unauthorized
     }
 
@@ -367,12 +393,12 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      *
      * @throws InvalidDestination if the destination URL is malformed
      */
-    private fun FullHttpRequest.toRequest(): Request {
+    private fun FullHttpRequest.asRequest(): Request {
       val destination = destination?.run { "https://$host:$port${uri()}" } ?: uri()
       return Request(
           try {
-            URL(destination)
-          } catch (_: MalformedURLException) {
+            URI(destination)
+          } catch (_: URISyntaxException) {
             throw InvalidDestination(destination)
           },
           method().name(),
@@ -384,17 +410,27 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     }
 
     /**
-     * Proxy the [Request] with the first [Interceptor] that passes the [Interceptor.test].
+     * Proxy the [Request] with an [Interceptor].
      *
-     * The [NoOpInterceptor] is used if none of the [interceptors] may intercept the [Request].
+     * > The [NoOpInterceptor] is used if none of the [interceptors] match the [Request].
      *
-     * @throws Throwable if [Interceptor.test], [Interceptor.intercept], or [Proxier.execute] throws
-     * an exception
+     * @throws FindInterceptorFailure if any [Interceptor.test] throws an exception
+     * @throws RequestInterceptFailure if the [Interceptor] fails to intercept the [Request]
+     * @throws ProxierFailure if the [Proxier] fails to execute the [Request]
+     * @throws ResponseInterceptFailure if the [Interceptor] fails to intercept the [Response]
      */
     private fun Request.proxy(): Response {
-      val interceptor = interceptors.find { it.test(this) } ?: NoOpInterceptor
+      val interceptor =
+          runCatching { interceptors.find { it.test(this) } }
+              .map { it ?: NoOpInterceptor }
+              .getOrElse { throw FindInterceptorFailure(it) }
       LOGGER.debug("Proxying request {} with {}", this, interceptor)
-      return also(interceptor::intercept).let(proxier::execute).also(interceptor::intercept)
+      return runCatching { also(interceptor::intercept) }
+          .onFailure { throw RequestInterceptFailure(it) }
+          .mapCatching(proxier::execute)
+          .onFailure { throw ProxierFailure(it) }
+          .mapCatching { it.also(interceptor::intercept) }
+          .getOrElse { throw ResponseInterceptFailure(it) }
     }
 
     /**
@@ -406,7 +442,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      * @throws UnknownDestination if the [destination] is `null`
      * @throws CertificateGenerationFailure if the certificate chain could not be generated
      */
-    private fun ByteBuf.initializeSslContext(): SslContext {
+    private fun ByteBuf.initializeSSL(): SslContext {
       if (getByte(0) != TLS_HANDSHAKE) throw ExpectedTLSHandshake
       if (certificates == null) throw HttpsUnsupported
       val destination = destination?.host ?: throw UnknownDestination
@@ -428,20 +464,29 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     private class InvalidUri(uri: String) : Error("Invalid URI $uri")
     private class InvalidHost(host: String) : Error("Invalid host $host")
     private class InvalidPort(port: String) : Error("Invalid port $port")
-    private class InvalidDestination(destination: String) : Error("Invalid URL $destination")
-    private class UnexpectedHttpRequestType(request: HttpRequest) :
-        Error("Unexpected HTTP request type ${request::class.simpleName}")
+    private class InvalidDestination(destination: String) : Error("Invalid URI $destination")
+    private class UnexpectedType(msg: Any) : Error("Read unexpected type ${msg::class.simpleName}")
     private object Unauthorized : Error("Unauthorized proxy request")
+    private class FindInterceptorFailure(cause: Throwable) :
+        Error("Unable to find interceptor", cause)
+    private class RequestInterceptFailure(cause: Throwable) :
+        Error("Failed to intercept request", cause)
+    private class ResponseInterceptFailure(cause: Throwable) :
+        Error("Failed to intercept response", cause)
+    private class ProxierFailure(cause: Throwable) :
+        Error("Failed to execute proxy request", cause)
     private object ExpectedTLSHandshake : Error("Expected TLS 'client hello' message")
     private object UnknownDestination : Error("Unknown destination")
     private class CertificateGenerationFailure(cause: Throwable) :
         Error("Failed to generate certificate", cause)
 
     /**
-     * A no-op [Interceptor] which is used if the [Request] does not match any [Interceptor]
-     * predicate.
+     * A no-op [Interceptor] which is used if a [Request] does not match any of the [interceptors].
      */
-    private object NoOpInterceptor : Interceptor
+    private object NoOpInterceptor : Interceptor {
+      override fun test(t: Request) = true
+      override fun toString() = "(default) no-op interceptor"
+    }
 
     private companion object {
 
@@ -465,39 +510,52 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
             ?.also { throw DecodeFailure(it) }
       }
 
-      /** Check if the [HttpRequest] requests for the connection to be closed. */
-      fun HttpRequest.closeConnection(): Boolean =
-          headers()[HttpHeaderNames.CONNECTION]?.trim()?.lowercase() == "close"
-
       /**
        * Write a [FullHttpResponse] with the [status] and [content] using the
        * [ChannelHandlerContext].
        */
-      fun ChannelHandlerContext.writeStatus(
+      fun ChannelHandlerContext.writeResponse(
           status: HttpResponseStatus,
-          content: String? = null
-      ): Future<Void> {
-        LOGGER.debug("Writing {} response with {}", status, content)
-        return writeAndFlush(
-            DefaultFullHttpResponse(
-                HttpVersion.HTTP_1_1,
-                status,
-                Unpooled.copiedBuffer(content.orEmpty(), Charsets.UTF_8)))
+          content: String?,
+          keepAlive: Boolean
+      ) {
+        writeResponse(
+            status,
+            Unpooled.copiedBuffer(content.orEmpty(), Charsets.UTF_8),
+            DefaultHttpHeaders(),
+            keepAlive)
       }
 
       /** Write the [response] as a [FullHttpResponse] using the [ChannelHandlerContext]. */
-      fun ChannelHandlerContext.writeResponse(response: Response): Future<Void> {
+      fun ChannelHandlerContext.writeResponse(response: Response, keepAlive: Boolean) {
         LOGGER.debug("Writing proxy response {}", response)
-        return writeAndFlush(
-            DefaultFullHttpResponse(
-                HttpVersion.HTTP_1_1,
-                HttpResponseStatus.valueOf(response.statusCode),
-                response.body?.let(Unpooled::copiedBuffer) ?: Unpooled.EMPTY_BUFFER,
-                DefaultHttpHeaders().apply {
-                  response.headers.forEach(::add)
-                  response.body?.apply { set(HttpHeaderNames.CONTENT_LENGTH, size) }
-                },
-                EmptyHttpHeaders.INSTANCE))
+        writeResponse(
+            HttpResponseStatus.valueOf(response.statusCode),
+            response.body?.let(Unpooled::copiedBuffer) ?: Unpooled.EMPTY_BUFFER,
+            DefaultHttpHeaders().apply { response.headers.forEach(::add) },
+            keepAlive)
+      }
+
+      /**
+       * Write a [FullHttpResponse] with the [status], [content], and [headers] using the
+       * [ChannelHandlerContext].
+       *
+       * > Add the [ChannelFutureListener.CLOSE] listener if [keepAlive] is `false`.
+       */
+      fun ChannelHandlerContext.writeResponse(
+          status: HttpResponseStatus,
+          content: ByteBuf,
+          headers: DefaultHttpHeaders,
+          keepAlive: Boolean
+      ) {
+        writeAndFlush(
+                DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1, status, content, headers, EmptyHttpHeaders.INSTANCE)
+                    .also {
+                      HttpUtil.setContentLength(it, it.content().readableBytes().toLong())
+                      HttpUtil.setKeepAlive(it, keepAlive)
+                    })
+            .also { if (!keepAlive) it.addListener(ChannelFutureListener.CLOSE) }
       }
 
       /**
@@ -505,7 +563,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
        * for the TLS 'client hello' message.
        */
       fun ChannelHandlerContext.connect() {
-        writeStatus(HttpResponseStatus.OK)
+        writeResponse(HttpResponseStatus.OK, null, true)
         channel().pipeline().remove(HttpServerCodec::class.java)
         channel().pipeline().remove(HttpObjectAggregator::class.java)
       }
@@ -544,14 +602,27 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
               is InvalidHost,
               is InvalidPort, -> HttpResponseStatus.BAD_REQUEST
               is InvalidDestination,
-              is UnexpectedHttpRequestType, -> HttpResponseStatus.UNPROCESSABLE_ENTITY
+              is UnexpectedType, -> HttpResponseStatus.UNPROCESSABLE_ENTITY
               Unauthorized -> HttpResponseStatus.UNAUTHORIZED
+              is FindInterceptorFailure,
+              is RequestInterceptFailure,
+              is ResponseInterceptFailure -> HttpResponseStatus.INTERNAL_SERVER_ERROR
+              is ProxierFailure -> HttpResponseStatus.BAD_GATEWAY
               HttpsUnsupported,
               ExpectedTLSHandshake,
               UnknownDestination,
               is CertificateGenerationFailure, -> HttpResponseStatus.NOT_IMPLEMENTED
             }
-        writeStatus(status, error.message).addListener(ChannelFutureListener.CLOSE)
+        LOGGER.debug("Writing error response {} with {}", status, error.message)
+        writeResponse(
+            status,
+            error.message,
+            when (error) {
+              is RequestInterceptFailure,
+              is ResponseInterceptFailure,
+              is ProxierFailure -> true
+              else -> false
+            })
       }
     }
   }

@@ -91,7 +91,7 @@ MockWebServer()
           .newCall(Request.Builder().url(target.url("/")).build())
           .execute()
           .use(Response::isSuccessful)
-          .let(::println)
+          .also(::println)
       }
   }
 }

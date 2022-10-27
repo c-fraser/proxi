@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "1.2.1"
+  version = "1.3.0"
 }
 
 java {
@@ -229,10 +229,19 @@ tasks {
     manifest { attributes("Automatic-Module-Name" to "io.github.cfraser.${rootProject.name}") }
   }
 
-  withType<Test> {
+  test {
     dependsOn(spotlessApply)
-    useJUnitPlatform()
-    systemProperties("io.netty.leakDetection.level" to "PARANOID" /*, "javax.net.debug" to "all"*/)
+    useJUnitPlatform { excludeTags("performance") }
+    systemProperties(
+        "io.netty.leakDetection.level" to "PARANOID",
+        /*"org.slf4j.simpleLogger.defaultLogLevel" to "debug",
+        "javax.net.debug" to "all"*/ )
+  }
+
+  @Suppress("UNUSED_VARIABLE")
+  val performanceTest by creating(Test::class) { useJUnitPlatform { includeTags("performance") } }
+
+  withType<Test> {
     testLogging {
       showExceptions = true
       showStandardStreams = true

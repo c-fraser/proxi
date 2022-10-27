@@ -30,5 +30,5 @@ class Response(
     @JvmField var body: ByteArray?
 ) {
 
-  override fun toString() = "$statusCode $request"
+  override fun toString() = "$statusCode ($request)"
 }

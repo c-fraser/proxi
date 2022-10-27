@@ -44,7 +44,7 @@ fun interface Proxier {
     @JvmOverloads
     fun create(httpClient: OkHttpClient = OkHttpClient()): Proxier = Proxier { request ->
       okhttp3.Request.Builder()
-          .url(request.url)
+          .url(request.uri.toURL())
           .method(request.method, request.body?.takeUnless { it.isEmpty() }?.toRequestBody())
           .headers(request.headers.toHeaders())
           .build()

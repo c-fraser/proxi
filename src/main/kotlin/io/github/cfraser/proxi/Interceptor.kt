@@ -23,17 +23,12 @@ import java.util.function.Predicate
  *
  * An [Interceptor] instance may intercept requests and responses concurrently. If the [Interceptor]
  * implementation is not stateless, then synchronization is required.
+ *
+ * [Interceptor] implements [Predicate] to determine whether a received proxy [Request] should be
+ * intercepted by `this` [Interceptor].
  */
 @JvmDefaultWithCompatibility
 interface Interceptor : Predicate<Request> {
-
-  /**
-   * Determine whether the [Request] should be intercepted by `this` [Interceptor].
-   *
-   * @param request the proxy [Request] capable of being intercepted
-   * @return `true` if the request and response should be intercepted, otherwise `false`
-   */
-  override fun test(request: Request): Boolean = true
 
   /**
    * Intercept the [request] before it is executed.

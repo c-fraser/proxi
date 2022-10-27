@@ -26,6 +26,7 @@ import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ProxySelector
+import java.net.URI
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.security.KeyStore
@@ -51,62 +52,12 @@ import okhttp3.tls.HeldCertificate
 import org.eclipse.jetty.server.Server as JettyServer
 import org.eclipse.jetty.server.ServerConnector
 import org.eclipse.jetty.util.ssl.SslContextFactory
-import org.junit.jupiter.api.Disabled
+import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.zeroturnaround.exec.ProcessExecutor
 
 class ServerTest {
-
-  /** [hey](https://github.com/rakyll/hey) must be installed to (successfully) run this test. */
-  @Disabled
-  @Test
-  fun `measure HTTP proxy server performance`() {
-    Server.create().start(PORT).use {
-      val command =
-          listOf(
-              "hey",
-              "-n",
-              "10000",
-              "-m",
-              "GET",
-              "-x",
-              "http://localhost:$PORT",
-              @Suppress("HttpUrlsUsage") "http://httpbin.org/get")
-      exec(command, readOutput = false)
-      exec(command)?.also(::println)
-    }
-  }
-
-  /**
-   * [hey](https://github.com/rakyll/hey) and [mkcert](https://github.com/FiloSottile/mkcert)
-   * (`mkcert -install`) must be installed to (successfully) run this test.
-   */
-  @Disabled
-  @Test
-  fun `measure HTTPS proxy server performance`() {
-    val rootCAPath =
-        exec(listOf("mkcert", "-CAROOT"))?.trim()?.let(Paths::get)
-            ?: fail("Failed to get (mkcert) root CA path")
-    val certificatePath = rootCAPath.resolve("rootCA.pem")
-    val privateKeyPath = rootCAPath.resolve("rootCA-key.pem")
-    Server.create(certificatePath = certificatePath, privateKeyPath = privateKeyPath)
-        .start(PORT)
-        .use {
-          val command =
-              listOf(
-                  "hey",
-                  "-n",
-                  "10000",
-                  "-m",
-                  "GET",
-                  "-x",
-                  "http://localhost:$PORT",
-                  "https://httpbin.org/get")
-          exec(command, readOutput = false)
-          exec(command)?.also(::println)
-        }
-  }
 
   @Test
   fun `proxy an HTTP request`() {
@@ -233,12 +184,86 @@ class ServerTest {
   fun `verify receiving HTTP request (invalid proxy request URL)`() {
     webServer {
       Server.create().start(PORT).use {
-        val response =
+        assertEquals(
+            ProxyError.PROXIER_ERROR.responseStatus?.code(),
             OkHttpClient()
                 .newCall(OkRequest.Builder().url("http://localhost:$PORT").build())
                 .execute()
-        assertEquals(response.code, 422)
+                .code)
       }
+    }
+  }
+
+  @Test
+  fun `verify proxying HTTP request by specifying destination in interceptor`() {
+    webServer { baseUrl ->
+      Server.create(
+              object : Interceptor {
+                override fun test(t: Request) = true
+                override fun intercept(request: Request) {
+                  request.uri = URI("$baseUrl$TARGET_PATH")
+                }
+              })
+          .start(PORT)
+          .use {
+            val response =
+                OkHttpClient()
+                    .newCall(OkRequest.Builder().url("http://localhost:$PORT").build())
+                    .execute()
+            assertEquals(200, response.code)
+            assertEquals(TARGET_DATA, response.data())
+          }
+    }
+  }
+
+  /**
+   * [hey](https://github.com/rakyll/hey) and [mkcert](https://github.com/FiloSottile/mkcert)
+   * (`mkcert -install`) must be installed to (successfully) run the [PerformanceTest] tests.
+   */
+  @Tag("performance")
+  class PerformanceTest {
+
+    @Test
+    fun `measure HTTP proxy server performance`() {
+      Server.create().start(PORT).use {
+        val command =
+            listOf(
+                "hey",
+                "-n",
+                "10000",
+                "-m",
+                "GET",
+                "-x",
+                "http://localhost:$PORT",
+                @Suppress("HttpUrlsUsage") "http://httpbin.org/get")
+        exec(command, readOutput = false)
+        exec(command)?.also(::println)
+      }
+    }
+
+    @Test
+    fun `measure HTTPS proxy server performance`() {
+      val rootCAPath =
+          exec(listOf("mkcert", "-CAROOT"))?.trim()?.let(Paths::get)
+              ?: fail("Failed to get (mkcert) root CA path")
+      val certificatePath = rootCAPath.resolve("rootCA.pem")
+      val privateKeyPath = rootCAPath.resolve("rootCA-key.pem")
+      Server.create(certificatePath = certificatePath, privateKeyPath = privateKeyPath)
+          .start(PORT)
+          .use {
+            val command =
+                listOf(
+                    "hey",
+                    "-n",
+                    "10000",
+                    "-m",
+                    "GET",
+                    "-x",
+                    "http://localhost:$PORT",
+                    "https://httpbin.org/get")
+            exec(command, readOutput = false)
+            exec(command)?.also(::println)
+          }
     }
   }
 
@@ -278,6 +303,8 @@ class ServerTest {
       RESPONSE
     }
 
+    override fun test(t: Request) = true
+
     override fun intercept(request: Request) {
       if (intercept == Intercept.REQUEST)
           error("${ErrorInterceptor::class.simpleName} intercepted request")
@@ -291,7 +318,7 @@ class ServerTest {
 
   private enum class ProxyError(val responseStatus: HttpResponseStatus?) {
     UNAUTHORIZED(HttpResponseStatus.UNAUTHORIZED),
-    PROXIER_ERROR(HttpResponseStatus.INTERNAL_SERVER_ERROR),
+    PROXIER_ERROR(HttpResponseStatus.BAD_GATEWAY),
     INTERCEPT_ERROR(HttpResponseStatus.INTERNAL_SERVER_ERROR),
     URI_TOO_LONG(HttpResponseStatus.REQUEST_URI_TOO_LONG),
     HEADER_FIELDS_TOO_LARGE(HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE),
@@ -315,7 +342,7 @@ class ServerTest {
             .run { resolve(file) }
             .also { it.writeText(this) }
 
-    val LOCALHOST = InetAddress.getByName("localhost").canonicalHostName
+    val LOCALHOST: String = InetAddress.getByName("localhost").canonicalHostName
     private val LOCALHOST_CERTIFICATE
       get() = HeldCertificate.Builder().addSubjectAlternativeName(LOCALHOST).build()
     private val PROXY_CERTIFICATE = HeldCertificate.Builder().certificateAuthority(0).build()
