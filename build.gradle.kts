@@ -44,7 +44,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "1.4.0"
+  version = "1.4.1"
 }
 
 java {
@@ -104,7 +104,8 @@ configure<SpotlessExtension> {
       See the License for the specific language governing permissions and
       limitations under the License.
       */
-      """.trimIndent()
+      """
+          .trimIndent()
 
   kotlin {
     ktfmt(ktfmtVersion)
