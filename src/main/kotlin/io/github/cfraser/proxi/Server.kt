@@ -296,6 +296,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      */
     private var future: Future<*>? = null
 
+    @Suppress("TooGenericExceptionCaught")
     override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
       when (msg) {
         is HttpRequest ->
@@ -447,13 +448,16 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
       if (getByte(0) != TLS_HANDSHAKE) throw ExpectedTLSHandshake
       if (certificates == null) throw HttpsUnsupported
       val destination = destination?.host ?: throw UnknownDestination
-      val certificateChain =
+      val certificate =
+          @Suppress("TooGenericExceptionCaught")
           try {
             certificates[destination]
           } catch (throwable: Throwable) {
             throw CertificateGenerationFailure(throwable)
           }
-      return SslContextBuilder.forServer(certificates.privateKey, *certificateChain).build()
+      return SslContextBuilder.forServer(
+              certificates.privateKey, certificate, certificates.certificate)
+          .build()
     }
 
     /** The errors that can occur while proxying a request within the [Handler.channelRead]. */
@@ -636,31 +640,31 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
 
     private val subject = certificateHolder.subject
     private val publicKey = certificateHolder.subjectPublicKeyInfo.toPublicKey()
-    private val certificate = certificateHolder.toX509Certificate()
     private val signatureAlgorithm = publicKey.signatureAlgorithm()
 
+    val certificate = certificateHolder.toX509Certificate()
     val privateKey = keyInfo.toPrivateKey()
 
     /**
      * The [LoadingCache] that stores a generated certificate chain for a *secure* proxy connection
      * to a host.
      */
-    private val cache: LoadingCache<String, Array<X509Certificate>> =
+    private val cache: LoadingCache<String, X509Certificate> =
         Caffeine.newBuilder()
             .maximumSize(64)
-            .evictionListener<String, Array<X509Certificate>> { host, _, cause ->
-              LOGGER.debug("Evicting generated certificate for {} ({}) from cache", host, cause)
+            .evictionListener<String, X509Certificate> { host, _, cause ->
+              LOGGER.debug("Evicting generated certificate for {} from cache ({})", host, cause)
             }
-            .build(this::generate)
+            .build(::generate)
 
-    /** Get the certificate chain, for the [host], from the [cache]. */
-    operator fun get(host: String): Array<X509Certificate> = cache[host]
+    /** Get the [X509Certificate], for the [host], from the [cache]. */
+    operator fun get(host: String): X509Certificate = cache[host]
 
     /**
      * Generate a certificate chain for the [host] using the [subject], [publicKey], and
      * [privateKey] of the [certificate].
      */
-    private fun generate(host: String): Array<X509Certificate> {
+    private fun generate(host: String): X509Certificate {
       LOGGER.debug("Generating certificate for {}", host)
       val certificateBuilder =
           JcaX509v3CertificateBuilder(
@@ -682,7 +686,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
               .addExtension(
                   Extension.extendedKeyUsage, true, ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth))
       val signer = JcaContentSignerBuilder(signatureAlgorithm).build(privateKey)
-      return arrayOf(certificateBuilder.build(signer).toX509Certificate(), certificate)
+      return certificateBuilder.build(signer).toX509Certificate()
     }
 
     @Suppress("NOTHING_TO_INLINE")

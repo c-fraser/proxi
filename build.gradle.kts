@@ -251,7 +251,6 @@ tasks {
   }
 
   withType<Detekt> {
-    enabled = false
     jvmTarget = "${JavaVersion.VERSION_11}"
     buildUponDefaultConfig = true
     config.setFrom(rootDir.resolve("detekt.yml"))

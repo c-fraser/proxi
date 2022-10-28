@@ -1,7 +1,9 @@
 complexity:
-  NestedBlockDepth:
-    active: false
+  LongParameterList:
+    functionThreshold: 7
 
 style:
-  ForbiddenVoid:
+  MagicNumber:
     active: false
+  ThrowsCount:
+    max: 5
