@@ -37,7 +37,8 @@ MockWebServer().use { target ->
   target.enqueue(MockResponse().setBody("Hello!"))
   // Define a response interceptor to modify the proxy response.
   class ResponseInterceptor : Interceptor {
-    override fun test(t: Request) = true
+    // Use this interceptor for "hello" requests.
+    override fun test(t: Request) = t.uri.path == "/hello"
     override fun intercept(response: Response) {
       // Print the response from the proxy request.
       response.body?.let(::String)?.also { println("Intercepted: $it") }

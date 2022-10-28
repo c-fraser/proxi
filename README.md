@@ -14,10 +14,10 @@ transformed.
 * [Usage](#usage)
 * [Design](#design)
 * [Examples](#examples)
-  * [Intercept a proxied HTTP request](#intercept-a-proxied-http-request)
+  * [Intercept a proxied HTTP response](#intercept-a-proxied-http-response)
   * [Proxy an HTTPS request](#proxy-an-https-request)
-    * [Proxy server provides trusted certificate chain](#proxy-server-provides-trusted-certificate-chain)
-    * [Proxy server executes requests with mTLS](#proxy-server-executes-requests-with-mtls)
+    * [Proxy server uses a trusted certificate chain](#proxy-server-uses-a-trusted-certificate-chain)
+    * [Proxy server executes a request with mTLS](#proxy-server-executes-a-request-with-mtls)
 * [License](#license)
 * [Acknowledgements](#acknowledgements)
 
@@ -41,8 +41,9 @@ and `Response`.
 > more granular `Predicate<Request>` implementations should be nearer to the beginning of the
 > provided array of `Interceptor`, otherwise they may be superseded by a more generic `Interceptor`.
 
-The `Proxier` handles the execution of the proxy request. A `Proxier` implementation may be provided
-when creating the `Server` to customize how proxy requests are executed.
+The `Proxier` handles the execution of the proxy request. To customize how proxy requests are
+executed, a `Proxier` implementation may be specified when creating the `Server` or within
+an `Interceptor`.
 
 To proxy HTTPS requests, the `Server` must be created with a CA certificate and (the corresponding)
 private key. Additionally, the given CA certificate must be trusted by the (proxy) client(s). This
@@ -54,7 +55,7 @@ HTTPS request is depicted below.
 
 ## Examples
 
-### Intercept a proxied HTTP request
+### Intercept a proxied HTTP response
 
 <!--- TEST_NAME Example01Test --> 
 
@@ -83,7 +84,8 @@ MockWebServer().use { target ->
   target.enqueue(MockResponse().setBody("Hello!"))
   // Define a response interceptor to modify the proxy response.
   class ResponseInterceptor : Interceptor {
-    override fun test(t: Request) = true
+    // Use this interceptor for "hello" requests.
+    override fun test(t: Request) = t.uri.path == "/hello"
     override fun intercept(response: Response) {
       // Print the response from the proxy request.
       response.body?.let(::String)?.also { println("Intercepted: $it") }
@@ -119,7 +121,7 @@ Received: Goodbye!
 > The HTTPS examples use [okhttp-tls](https://github.com/square/okhttp/tree/master/okhttp-tls) to
 > simplify the creation of certificates.
 
-#### Proxy server provides trusted certificate chain
+#### Proxy server uses a trusted certificate chain
 
 > This example code is intended to be representative of a realistic HTTPS deployment.
 
@@ -184,7 +186,7 @@ Server.create(
 true
 -->
 
-#### Proxy server executes requests with mTLS
+#### Proxy server executes a request with mTLS
 
 <!--- TEST_NAME Example03Test --> 
 

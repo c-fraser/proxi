@@ -31,6 +31,16 @@ import java.util.function.Predicate
 interface Interceptor : Predicate<Request> {
 
   /**
+   * The [Proxier] to use to execute [Request]s intercepted by this [Interceptor].
+   *
+   * If [proxier] is `null` then the *global* [Proxier] will be used.
+   *
+   * @see Server.create to specify a *global* [Proxier]
+   */
+  val proxier: Proxier?
+    get() = null
+
+  /**
    * Intercept the [request] before it is executed.
    *
    * @param request the intercepted [Request]

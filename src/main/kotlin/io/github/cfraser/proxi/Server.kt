@@ -126,7 +126,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
             .channel(NioServerSocketChannel::class.java)
             .childHandler(initializer)
             .bind(port)
-            .syncUninterruptibly()
+            .sync()
             .run { if (isSuccess) channel() else throw cause() }
   }
 
@@ -141,7 +141,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     check(started.get()) { "The proxy server is not running" }
     check(stopped.compareAndSet(false, true)) { "The proxy server was already stopped" }
     LOGGER.info("Stopping proxy server")
-    channel.close().syncUninterruptibly().apply { if (!isSuccess) throw cause() }
+    channel.close().sync().apply { if (!isSuccess) throw cause() }
     fun EventLoopGroup.close() =
         takeUnless { it.isShuttingDown || it.isShutdown || it.isTerminated }?.shutdownGracefully()
     acceptorGroup.close()
@@ -176,12 +176,13 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      * @param interceptors the [Array] of [Interceptor] to use to intercept proxy requests and
      * responses. The first [Interceptor] that passes the [Interceptor.test] is used for each proxy
      * request
-     * @param proxier the [Proxier] to use to execute proxy requests
+     * @param proxier the *global* [Proxier] to use to execute proxy requests. The *global*
+     * [Proxier] may be overridden by a specific [Request] through an [Interceptor.proxier].
      * @param executor the [ExecutorService] to use to asynchronously execute proxy requests. The
      * asynchronous execution also includes interception of the proxy request and response.
      * @param certificatePath the [Path] to the X.509 *trusted certificate authority*
      * @param privateKeyPath the [Path] to the PKCS8 private key for the *trusted certificate*
-     * @param credentials the [Credentials] required in the [HttpHeaderNames.PROXY_AUTHORIZATION]
+     * @param credentials the [Credentials] required in the `proxy-authorization` header
      * @return the proxy [Server]
      * @throws RuntimeException if the proxy server failed to initialize
      */
@@ -410,7 +411,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     }
 
     /**
-     * Proxy the [Request] with an [Interceptor].
+     * Proxy the [Request] with an [Interceptor] and [Proxier].
      *
      * > The [NoOpInterceptor] is used if none of the [interceptors] match the [Request].
      *
@@ -427,7 +428,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
       LOGGER.debug("Proxying request {} with {}", this, interceptor)
       return runCatching { also(interceptor::intercept) }
           .onFailure { throw RequestInterceptFailure(it) }
-          .mapCatching(proxier::execute)
+          .mapCatching((interceptor.proxier ?: proxier)::execute)
           .onFailure { throw ProxierFailure(it) }
           .mapCatching { it.also(interceptor::intercept) }
           .getOrElse { throw ResponseInterceptFailure(it) }
