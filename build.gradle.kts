@@ -35,6 +35,7 @@ plugins {
   alias(libs.plugins.jreleaser)
   alias(libs.plugins.dependency.versions)
   alias(libs.plugins.kover)
+  alias(libs.plugins.compatibility.validator)
   `java-library`
   `maven-publish`
   signing
@@ -44,7 +45,7 @@ apply(plugin = "kotlinx-knit")
 
 allprojects {
   group = "io.github.c-fraser"
-  version = "1.4.1"
+  version = "1.5.0"
 }
 
 java {
@@ -104,8 +105,7 @@ configure<SpotlessExtension> {
       See the License for the specific language governing permissions and
       limitations under the License.
       */
-      """
-          .trimIndent()
+      """.trimIndent()
 
   kotlin {
     ktfmt(ktfmtVersion)
