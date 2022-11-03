@@ -34,12 +34,12 @@ The proxy `Server` proxies requests as displayed in the diagram below.
 
 ![proxy-server](docs/proxy-server.png)
 
-The first `Interceptor` matching the `Request` is used to `Interceptor.intercept` the `Request`
-and `Response`.
+The first `Interceptor` that finds the `Request` to be `Interceptor.interceptable` is used
+to `Interceptor.intercept` the `Request` and `Response`.
 
 > As such, be mindful of the `Interceptor` order in `Server.create`. `Interceptor` instances with
-> more granular `Predicate<Request>` implementations should be nearer to the beginning of the
-> provided array of `Interceptor`, otherwise they may be superseded by a more generic `Interceptor`.
+> overly generic `Interceptor.interceptable` implementations *should* be nearer to the end of the
+> provided array of `Interceptor`, otherwise they may supersede the *correct* `Interceptor`.
 
 The `Proxier` handles the execution of the proxy request. To customize how proxy requests are
 executed, a `Proxier` implementation may be specified when creating the `Server` or within
@@ -85,7 +85,7 @@ MockWebServer().use { target ->
   // Define a response interceptor to modify the proxy response.
   class ResponseInterceptor : Interceptor {
     // Use this interceptor for "hello" requests.
-    override fun test(t: Request) = t.uri.path == "/hello"
+    override fun interceptable(request: Request) = request.uri.path == "/hello"
     override fun intercept(response: Response) {
       // Print the response from the proxy request.
       response.body?.let(::String)?.also { println("Intercepted: $it") }

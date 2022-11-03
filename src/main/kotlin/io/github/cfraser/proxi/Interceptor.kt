@@ -15,20 +15,15 @@ limitations under the License.
 */
 package io.github.cfraser.proxi
 
-import java.util.function.Predicate
-
 /**
  * [Interceptor] intercepts a proxy request and the corresponding response. The interception of
  * mutable [Request] and [Response] enables the dynamic transformation of proxied data.
  *
  * An [Interceptor] instance may intercept requests and responses concurrently. If the [Interceptor]
  * implementation is not stateless, then synchronization is required.
- *
- * [Interceptor] implements [Predicate] to determine whether a received proxy [Request] should be
- * intercepted by `this` [Interceptor].
  */
 @JvmDefaultWithCompatibility
-interface Interceptor : Predicate<Request> {
+interface Interceptor {
 
   /**
    * The [Proxier] to use to execute [Request]s intercepted by this [Interceptor].
@@ -39,6 +34,15 @@ interface Interceptor : Predicate<Request> {
    */
   val proxier: Proxier?
     get() = null
+
+  /**
+   * Determine whether the [request] should be intercepted by `this` [Interceptor].
+   *
+   * @param request the proxy [Request] capable of being intercepted
+   * @return `true` if the request and response should be intercepted, otherwise `false`
+   * @throws Exception if the interceptable check fails
+   */
+  @Throws(Exception::class) fun interceptable(request: Request): Boolean = false
 
   /**
    * Intercept the [request] before it is executed.

@@ -163,9 +163,9 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      * Create a proxy [Server] instance.
      *
      * The [interceptors] are used to dynamically transform intercepted [Request] and [Response]
-     * data. When a [Request] is received by the proxy [Server] it is *permanently* associated with
-     * an [Interceptor] by finding the **first**, respective to the given order, that matches the
-     * [java.util.function.Predicate] of [Request]. If the [Request] is not *interceptable*, then a
+     * data. When a [Request] is received by the proxy [Server] it is associated with an
+     * [Interceptor] by finding the **first**, respective to the given order, that determines the
+     * [Request] to be [Interceptor.interceptable]. If the [Request] is not *interceptable*, then a
      * default *no-op* [Interceptor] is used.
      *
      * For the proxy [Server] to support proxying *HTTPS* requests, the [certificatePath] and
@@ -174,8 +174,8 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      * given [certificatePath].
      *
      * @param interceptors the [Array] of [Interceptor] to use to intercept proxy requests and
-     * responses. The first [Interceptor] that passes the [Interceptor.test] is used for each proxy
-     * request
+     * responses. The first [Interceptor], relative to the given order, that is
+     * [Interceptor.interceptable] is used for each proxy request
      * @param proxier the *global* [Proxier] to use to execute proxy requests. The *global*
      * [Proxier] may be overridden by a specific [Request] through an [Interceptor.proxier].
      * @param executor the [ExecutorService] to use to asynchronously execute proxy requests. The
@@ -314,7 +314,9 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
                   future =
                       executor.submit {
                         try {
-                          ctx.writeResponse(request.proxy(), keepAlive)
+                          val response = request.proxy()
+                          LOGGER.debug("Writing proxy response {}", response)
+                          ctx.writeResponse(response, keepAlive)
                         } catch (error: Error) {
                           LOGGER.error("Failed to proxy request", error)
                           ctx.handleError(error)
@@ -352,7 +354,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
 
     @Suppress("OVERRIDE_DEPRECATION")
     override fun exceptionCaught(ctx: ChannelHandlerContext?, cause: Throwable?) {
-      LOGGER.warn("Unhandled exception caught", cause)
+      LOGGER.warn("Uncaught exception", cause)
     }
 
     /**
@@ -414,16 +416,17 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
     /**
      * Proxy the [Request] with an [Interceptor] and [Proxier].
      *
-     * > The [NoOpInterceptor] is used if none of the [interceptors] match the [Request].
+     * > The [NoOpInterceptor] is used if none of the [interceptors] determine the [Request] is
+     * [Interceptor.interceptable].
      *
-     * @throws FindInterceptorFailure if any [Interceptor.test] throws an exception
+     * @throws FindInterceptorFailure if any [Interceptor.interceptable] check throws an exception
      * @throws RequestInterceptFailure if the [Interceptor] fails to intercept the [Request]
      * @throws ProxierFailure if the [Proxier] fails to execute the [Request]
      * @throws ResponseInterceptFailure if the [Interceptor] fails to intercept the [Response]
      */
     private fun Request.proxy(): Response {
       val interceptor =
-          runCatching { interceptors.find { it.test(this) } }
+          runCatching { interceptors.find { it.interceptable(this) } }
               .map { it ?: NoOpInterceptor }
               .getOrElse { throw FindInterceptorFailure(it) }
       LOGGER.debug("Proxying request {} with {}", this, interceptor)
@@ -448,6 +451,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
       if (getByte(0) != TLS_HANDSHAKE) throw ExpectedTLSHandshake
       if (certificates == null) throw HttpsUnsupported
       val destination = destination?.host ?: throw UnknownDestination
+      LOGGER.debug("Initializing SSL context for {}", destination)
       val certificate =
           @Suppress("TooGenericExceptionCaught")
           try {
@@ -489,7 +493,6 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
      * A no-op [Interceptor] which is used if a [Request] does not match any of the [interceptors].
      */
     private object NoOpInterceptor : Interceptor {
-      override fun test(t: Request) = true
       override fun toString() = "(default) no-op interceptor"
     }
 
@@ -533,7 +536,6 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
 
       /** Write the [response] as a [FullHttpResponse] using the [ChannelHandlerContext]. */
       fun ChannelHandlerContext.writeResponse(response: Response, keepAlive: Boolean) {
-        LOGGER.debug("Writing proxy response {}", response)
         writeResponse(
             HttpResponseStatus.valueOf(response.statusCode),
             response.body?.let(Unpooled::copiedBuffer) ?: Unpooled.EMPTY_BUFFER,
@@ -594,7 +596,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
        * then [Channel.close] the [ChannelHandlerContext.channel].
        */
       fun ChannelHandlerContext.handleError(error: Error) {
-        val status =
+        writeResponse(
             when (error) {
               is DecodeFailure ->
                   when (error.cause) {
@@ -617,10 +619,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
               ExpectedTLSHandshake,
               UnknownDestination,
               is CertificateGenerationFailure, -> HttpResponseStatus.NOT_IMPLEMENTED
-            }
-        LOGGER.debug("Writing error response {} with {}", status, error.message)
-        writeResponse(
-            status,
+            },
             error.message,
             when (error) {
               is RequestInterceptFailure,
@@ -653,7 +652,7 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
         Caffeine.newBuilder()
             .maximumSize(64)
             .evictionListener<String, X509Certificate> { host, _, cause ->
-              LOGGER.debug("Evicting generated certificate for {} from cache ({})", host, cause)
+              LOGGER.debug("Generated certificate for {} removed from cache ({})", host, cause)
             }
             .build(::generate)
 

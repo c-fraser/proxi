@@ -11,16 +11,18 @@ public final class io/github/cfraser/proxi/Credentials {
 	public fun toString ()Ljava/lang/String;
 }
 
-public abstract interface class io/github/cfraser/proxi/Interceptor : java/util/function/Predicate {
+public abstract interface class io/github/cfraser/proxi/Interceptor {
 	public fun getProxier ()Lio/github/cfraser/proxi/Proxier;
 	public fun intercept (Lio/github/cfraser/proxi/Request;)V
 	public fun intercept (Lio/github/cfraser/proxi/Response;)V
+	public fun interceptable (Lio/github/cfraser/proxi/Request;)Z
 }
 
 public final class io/github/cfraser/proxi/Interceptor$DefaultImpls {
 	public static fun getProxier (Lio/github/cfraser/proxi/Interceptor;)Lio/github/cfraser/proxi/Proxier;
 	public static fun intercept (Lio/github/cfraser/proxi/Interceptor;Lio/github/cfraser/proxi/Request;)V
 	public static fun intercept (Lio/github/cfraser/proxi/Interceptor;Lio/github/cfraser/proxi/Response;)V
+	public static fun interceptable (Lio/github/cfraser/proxi/Interceptor;Lio/github/cfraser/proxi/Request;)Z
 }
 
 public abstract interface class io/github/cfraser/proxi/Proxier {

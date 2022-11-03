@@ -199,7 +199,7 @@ class ServerTest {
     webServer { baseUrl ->
       Server.create(
               object : Interceptor {
-                override fun test(t: Request) = true
+                override fun interceptable(request: Request) = true
                 override fun intercept(request: Request) {
                   request.uri = URI("$baseUrl$TARGET_PATH")
                 }
@@ -269,7 +269,7 @@ class ServerTest {
 
   private object RequestInterceptor : Interceptor {
 
-    override fun test(request: Request) = request.method == "POST"
+    override fun interceptable(request: Request) = request.method == "POST"
 
     override fun intercept(request: Request) {
       request.body = INTERCEPTED_DATA.toByteArray()
@@ -278,7 +278,7 @@ class ServerTest {
 
   private object ResponseInterceptor : Interceptor {
 
-    override fun test(request: Request) = request.method == "POST"
+    override fun interceptable(request: Request) = request.method == "POST"
 
     override fun intercept(response: Response) {
       response.body = INTERCEPTED_DATA.toByteArray()
@@ -287,7 +287,7 @@ class ServerTest {
 
   private object FailInterceptor : Interceptor {
 
-    override fun test(request: Request) = request.method == "POST"
+    override fun interceptable(request: Request) = request.method == "POST"
 
     override fun intercept(request: Request) =
         fail("${FailInterceptor::class.simpleName} intercepted request")
@@ -303,7 +303,7 @@ class ServerTest {
       RESPONSE
     }
 
-    override fun test(t: Request) = true
+    override fun interceptable(request: Request) = true
 
     override fun intercept(request: Request) {
       if (intercept == Intercept.REQUEST)
