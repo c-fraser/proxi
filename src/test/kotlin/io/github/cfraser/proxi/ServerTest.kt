@@ -244,7 +244,7 @@ class ServerTest {
     fun `measure HTTPS proxy server performance`() {
       val rootCAPath =
           exec(listOf("mkcert", "-CAROOT"))?.trim()?.let(Paths::get)
-              ?: fail("Failed to GET (mkcert) root CA path")
+              ?: fail("Failed to get (mkcert) root CA path")
       val certificatePath = rootCAPath.resolve("rootCA.pem")
       val privateKeyPath = rootCAPath.resolve("rootCA-key.pem")
       Server.create(certificatePath = certificatePath, privateKeyPath = privateKeyPath)
