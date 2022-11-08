@@ -3,7 +3,7 @@ junit = "5.9.1"
 knit = "0.4.0"
 kotlin = "1.7.20"
 ktfmt = "0.40"
-netty = "4.1.82.Final"
+netty = "4.1.84.Final"
 okhttp = "4.10.0"
 slf4j = "2.0.3"
 
@@ -33,7 +33,7 @@ zt-exec = { module = "org.zeroturnaround:zt-exec", version = "1.12" }
 dependency-versions = { id = "com.github.ben-manes.versions", version = "0.43.0" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version = "1.21.0" }
 dokka = { id = "org.jetbrains.dokka", version = "1.7.20" }
-jreleaser = { id = "org.jreleaser", version = "1.3.0" }
+jreleaser = { id = "org.jreleaser", version = "1.3.1" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kover = { id = "org.jetbrains.kotlinx.kover", version = "0.6.1" }
 nexus-publish = { id = "io.github.gradle-nexus.publish-plugin", version = "1.1.0" }

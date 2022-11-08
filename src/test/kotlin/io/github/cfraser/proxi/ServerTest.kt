@@ -42,7 +42,6 @@ import kotlin.io.path.inputStream
 import kotlin.io.path.writeText
 import kotlin.test.assertEquals
 import kotlin.test.fail
-import okhttp3.Credentials as OkCredentials
 import okhttp3.OkHttpClient
 import okhttp3.Request as OkRequest
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -245,7 +244,7 @@ class ServerTest {
     fun `measure HTTPS proxy server performance`() {
       val rootCAPath =
           exec(listOf("mkcert", "-CAROOT"))?.trim()?.let(Paths::get)
-              ?: fail("Failed to get (mkcert) root CA path")
+              ?: fail("Failed to GET (mkcert) root CA path")
       val certificatePath = rootCAPath.resolve("rootCA.pem")
       val privateKeyPath = rootCAPath.resolve("rootCA-key.pem")
       Server.create(certificatePath = certificatePath, privateKeyPath = privateKeyPath)
@@ -317,7 +316,7 @@ class ServerTest {
   }
 
   private enum class ProxyError(val responseStatus: HttpResponseStatus?) {
-    UNAUTHORIZED(HttpResponseStatus.UNAUTHORIZED),
+    UNAUTHORIZED(HttpResponseStatus.PROXY_AUTHENTICATION_REQUIRED),
     PROXIER_ERROR(HttpResponseStatus.BAD_GATEWAY),
     INTERCEPT_ERROR(HttpResponseStatus.INTERNAL_SERVER_ERROR),
     URI_TOO_LONG(HttpResponseStatus.REQUEST_URI_TOO_LONG),
@@ -379,13 +378,17 @@ class ServerTest {
                         privateKeyPath = PROXY_PRIVATE_KEY_PATH,
                         credentials = credentials) to
                         newClient(
+                            credentials =
+                                credentials.takeUnless { error == ProxyError.UNAUTHORIZED },
                             sslSocketFactory =
                                 PROXY_CLIENT_SOCKET_FACTORY to PROXY_CLIENT_TRUST_MANGER)
                 else
                     Server.create(*interceptors, proxier = proxier, credentials = credentials) to
-                        newClient()
+                        newClient(
+                            credentials =
+                                credentials.takeUnless { error == ProxyError.UNAUTHORIZED })
             server.start(PORT).use {
-              client.proxyRequests(baseUrl, interceptors, credentials, error?.responseStatus)
+              client.proxyRequests(baseUrl, interceptors, error?.responseStatus)
             }
           }
     }
@@ -431,10 +434,22 @@ class ServerTest {
 
     private fun newClient(
         proxy: Int? = PORT,
+        credentials: Credentials? = null,
         sslSocketFactory: Pair<SSLSocketFactory, X509TrustManager>? = null
     ): OkHttpClient =
         OkHttpClient.Builder()
             .run { proxy?.let { proxySelector(ProxySelector.of(InetSocketAddress(it))) } ?: this }
+            .run {
+              credentials?.let { (username, password) ->
+                proxyAuthenticator { _, response ->
+                  response.request
+                      .newBuilder()
+                      .header("Proxy-Authorization", okhttp3.Credentials.basic(username, password))
+                      .build()
+                }
+              }
+                  ?: this
+            }
             .run {
               sslSocketFactory?.let { (socketFactory, trustManager) ->
                 sslSocketFactory(socketFactory, trustManager)
@@ -470,30 +485,19 @@ class ServerTest {
           .use { block("http${"s".takeIf { secure }.orEmpty()}://$host:${it.port()}") }
     }
 
-    private fun OkHttpClient.get(url: String, credentials: Credentials?): String =
-        OkRequest.Builder()
-            .url(url)
-            .credentials(credentials)
-            .build()
-            .let(::newCall)
-            .execute()
-            .data()
+    @Suppress("TestFunctionName")
+    private fun OkHttpClient.GET(url: String): String =
+        OkRequest.Builder().url(url).build().let(::newCall).execute().data()
 
-    private fun OkHttpClient.post(url: String, data: String, credentials: Credentials?): String =
+    @Suppress("TestFunctionName")
+    private fun OkHttpClient.POST(url: String, data: String): String =
         OkRequest.Builder()
             .url(url)
             .method("POST", data.toRequestBody())
-            .credentials(credentials)
             .build()
             .let(::newCall)
             .execute()
             .data()
-
-    private fun OkRequest.Builder.credentials(credentials: Credentials?): OkRequest.Builder =
-        credentials?.let { (username, password) ->
-          header("Proxy-Authorization", OkCredentials.basic(username, password))
-        }
-            ?: this
 
     private fun OkResponse.data(): String =
         use { it.body?.use(ResponseBody::string) } ?: fail("No response data in $this")
@@ -501,14 +505,13 @@ class ServerTest {
     private fun OkHttpClient.proxyRequests(
         baseUrl: String,
         interceptors: Array<out Interceptor>,
-        credentials: Credentials?,
         responseStatus: HttpResponseStatus? = null
     ) {
       if (responseStatus == null) {
-        assertEquals(TARGET_DATA, get("$baseUrl$TARGET_PATH", credentials))
+        assertEquals(TARGET_DATA, GET("$baseUrl$TARGET_PATH"))
         assertEquals(
             if (interceptors.isEmpty()) TARGET_DATA else INTERCEPTED_DATA,
-            post("$baseUrl$TARGET_PATH", TARGET_DATA, credentials))
+            POST("$baseUrl$TARGET_PATH", TARGET_DATA))
       } else
           assertEquals(
               responseStatus.code(),
@@ -521,8 +524,8 @@ class ServerTest {
                   .run {
                     if (responseStatus == HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE)
                         header(
-                            "${HttpHeaderNames.PROXY_AUTHORIZATION}",
-                            "Basic ${newRandomString(Server.MAX_HEADER_SIZE + 1)}")
+                            "${HttpHeaderNames.COOKIE}",
+                            newRandomString(Server.MAX_HEADER_SIZE + 1))
                     else this
                   }
                   .build()

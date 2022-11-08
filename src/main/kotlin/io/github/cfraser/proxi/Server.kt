@@ -592,41 +592,49 @@ class Server private constructor(private val initializer: ChannelInitializer<Cha
       /**
        * Handle the [error].
        *
-       * Write a [FullHttpResponse] with an appropriate [HttpResponseStatus] and [Error.message]
-       * then [Channel.close] the [ChannelHandlerContext.channel].
+       * If the [error] is [Unauthorized] then issue the proxy client authentication challenge.
+       * Otherwise, write a [FullHttpResponse] with an appropriate [HttpResponseStatus] and
+       * [Error.message] then [Channel.close] the [ChannelHandlerContext.channel].
        */
       fun ChannelHandlerContext.handleError(error: Error) {
-        writeResponse(
-            when (error) {
-              is DecodeFailure ->
-                  when (error.cause) {
-                    is TooLongHttpLineException -> HttpResponseStatus.REQUEST_URI_TOO_LONG
-                    is TooLongHttpHeaderException ->
-                        HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE
-                    else -> HttpResponseStatus.BAD_REQUEST
-                  }
-              is InvalidUri,
-              is InvalidHost,
-              is InvalidPort, -> HttpResponseStatus.BAD_REQUEST
-              is InvalidDestination,
-              is UnexpectedType, -> HttpResponseStatus.UNPROCESSABLE_ENTITY
-              Unauthorized -> HttpResponseStatus.UNAUTHORIZED
-              is FindInterceptorFailure,
-              is RequestInterceptFailure,
-              is ResponseInterceptFailure -> HttpResponseStatus.INTERNAL_SERVER_ERROR
-              is ProxierFailure -> HttpResponseStatus.BAD_GATEWAY
-              HttpsUnsupported,
-              ExpectedTLSHandshake,
-              UnknownDestination,
-              is CertificateGenerationFailure, -> HttpResponseStatus.NOT_IMPLEMENTED
-            },
-            error.message,
-            when (error) {
-              is RequestInterceptFailure,
-              is ResponseInterceptFailure,
-              is ProxierFailure -> true
-              else -> false
-            })
+        if (error == Unauthorized)
+            writeResponse(
+                HttpResponseStatus.PROXY_AUTHENTICATION_REQUIRED,
+                Unpooled.EMPTY_BUFFER,
+                DefaultHttpHeaders().apply { add(HttpHeaderNames.PROXY_AUTHENTICATE, "Basic") },
+                true)
+        else
+            writeResponse(
+                when (error) {
+                  is DecodeFailure ->
+                      when (error.cause) {
+                        is TooLongHttpLineException -> HttpResponseStatus.REQUEST_URI_TOO_LONG
+                        is TooLongHttpHeaderException ->
+                            HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE
+                        else -> HttpResponseStatus.BAD_REQUEST
+                      }
+                  is InvalidUri,
+                  is InvalidHost,
+                  is InvalidPort, -> HttpResponseStatus.BAD_REQUEST
+                  is InvalidDestination,
+                  is UnexpectedType, -> HttpResponseStatus.UNPROCESSABLE_ENTITY
+                  Unauthorized,
+                  is FindInterceptorFailure,
+                  is RequestInterceptFailure,
+                  is ResponseInterceptFailure -> HttpResponseStatus.INTERNAL_SERVER_ERROR
+                  is ProxierFailure -> HttpResponseStatus.BAD_GATEWAY
+                  HttpsUnsupported,
+                  ExpectedTLSHandshake,
+                  UnknownDestination,
+                  is CertificateGenerationFailure, -> HttpResponseStatus.NOT_IMPLEMENTED
+                },
+                error.message,
+                when (error) {
+                  is RequestInterceptFailure,
+                  is ResponseInterceptFailure,
+                  is ProxierFailure -> true
+                  else -> false
+                })
       }
     }
   }
