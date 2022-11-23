@@ -3,7 +3,7 @@ junit = "5.9.1"
 knit = "0.4.0"
 kotlin = "1.7.20"
 ktfmt = "0.40"
-netty = "4.1.84.Final"
+netty = "4.1.85.Final"
 okhttp = "4.10.0"
 slf4j = "2.0.4"
 
